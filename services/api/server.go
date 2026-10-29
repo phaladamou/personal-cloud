@@ -46,6 +46,7 @@ func NewServer(ctrl *controller.Controller) *Server {
 	s.mux.HandleFunc("POST /v1/workspaces/{id}/restore", s.transition((*controller.Controller).Restore))
 	s.mux.HandleFunc("GET /v1/workspaces/{id}/exec", s.execWorkspace)
 	s.mux.HandleFunc("GET /terminal/{id}", s.terminalWorkspace)
+	s.snapshotRoutes()
 	return s
 }
 
