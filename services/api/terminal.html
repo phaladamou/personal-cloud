@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<!-- Phase-1 minimal web terminal for Personal Cloud.
+     Single page served by the API at /terminal/{id}: xterm.js (CDN) wired
+     to the exec WebSocket endpoint. No PTY, no auth, no persistence yet.
+     The full Next.js app (apps/web) comes in Phase 2. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Personal Cloud Terminal</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css">
+<style>
+html, body { margin: 0; height: 100%; background: #000; }
+#terminal { height: 100%; }
+</style>
+</head>
+<body>
+<div id="terminal"></div>
+<script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
+<script>
+(function () {
+  var parts = window.location.pathname.split('/');
+  var id = parts[parts.length - 1];
+  var params = new URLSearchParams(window.location.search);
+  var shell = params.get('shell') || '/bin/sh';
+  var term = new Terminal({ cursorBlink: true });
+  term.open(document.getElementById('terminal'));
+  term.write('Connecting to workspace ' + id + '...\r\n');
+  var proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  var url = proto + '//' + window.location.host +
+    '/v1/workspaces/' + encodeURIComponent(id) +
+    '/exec?argv=' + encodeURIComponent(shell);
+  var sock = new WebSocket(url);
+  sock.binaryType = 'arraybuffer';
+  sock.onopen = function () {
+    term.reset();
+    term.focus();
+  };
+  sock.onmessage = function (ev) {
+    if (typeof ev.data === 'string') {
+      term.write(ev.data);
+      return;
+    }
+    term.write(new TextDecoder().decode(new Uint8Array(ev.data)));
+  };
+  sock.onclose = function () {
+    term.write('\r\n[connection closed]\r\n');
+  };
+  sock.onerror = function () {
+    term.write('\r\n[connection error]\r\n');
+  };
+  term.onData(function (data) {
+    if (sock.readyState === WebSocket.OPEN) {
+      sock.send(data);
+    }
+  });
+})();
+</script>
+</body>
+</html>
