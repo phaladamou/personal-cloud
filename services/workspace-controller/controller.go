@@ -11,6 +11,8 @@ import (
 	"github.com/phaladamou/personal-cloud/packages/protocol"
 	"github.com/phaladamou/personal-cloud/packages/types"
 	"github.com/phaladamou/personal-cloud/runtime/container"
+	"github.com/phaladamou/personal-cloud/storage/snapshots"
+	"github.com/phaladamou/personal-cloud/storage/volumes"
 )
 
 // ErrIllegalTransition is returned when an operation is not allowed in
@@ -47,6 +49,11 @@ var defaultInitCommand = []string{"sleep", "infinity"}
 // delete. The workspace id -> container id mapping is in memory only in
 // Phase 1: a controller restart re-creates containers on next Start.
 //
+// Storage (see storage.go) is optional: volume and snapshot operations
+// delegate to the configured managers and CreateSnapshot emits
+// snapshot.created. Without managers they return ErrVolumesUnavailable
+// / ErrSnapshotsUnavailable.
+//
 // A nil bus disables event publishing. Methods are safe for concurrent
 // use.
 type Controller struct {
@@ -54,6 +61,8 @@ type Controller struct {
 	backend container.ContainerBackend
 	bus     *protocol.EventBus
 	initCmd []string
+	vols    volumes.VolumeManager
+	snaps   snapshots.SnapshotManager
 
 	mu         sync.Mutex
 	containers map[string]string
@@ -313,8 +322,9 @@ func (c *Controller) Restore(ctx context.Context, id string) (types.Workspace, e
 	return ws, nil
 }
 
-// Delete removes a CREATED, STOPPED, or SLEEPING workspace and its
-// container. A missing container is ignored.
+// Delete removes a CREATED, STOPPED, or SLEEPING workspace, its
+// container, and (best-effort) its volumes and snapshots. A missing
+// container is ignored.
 func (c *Controller) Delete(ctx context.Context, id string) error {
 	ws, err := c.store.Get(ctx, id)
 	if err != nil {
@@ -329,7 +339,11 @@ func (c *Controller) Delete(ctx context.Context, id string) error {
 		}
 		c.unbindContainer(id)
 	}
-	return c.store.Delete(ctx, id)
+	if err := c.store.Delete(ctx, id); err != nil {
+		return err
+	}
+	c.cleanupStorage(ctx, id)
+	return nil
 }
 
 // Exec runs a command in the workspace container. The workspace must be
