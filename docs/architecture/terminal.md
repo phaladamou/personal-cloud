@@ -19,7 +19,9 @@ Limitations assumées de la Phase 1 :
 
 - pas de pseudo-terminal (pas de redimensionnement ni de contrôle de
   jobs) ;
-- pas d'authentification (l'API ignore encore le jeton `pc login`) ;
+- authentification partielle : la page elle-même reste ouverte mais
+  l'endpoint exec exige un jeton porteur (`pc login`), que la page
+  statique ne sait pas encore envoyer ;
 - pas de reconnexion automatique ni de persistance de session.
 
 ## Phase 2 : application Next.js

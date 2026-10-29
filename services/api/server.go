@@ -20,6 +20,7 @@ import (
 	"github.com/phaladamou/personal-cloud/packages/types"
 	"github.com/phaladamou/personal-cloud/runtime/container"
 	"github.com/phaladamou/personal-cloud/services/api/internal/ws"
+	"github.com/phaladamou/personal-cloud/services/auth"
 	controller "github.com/phaladamou/personal-cloud/services/workspace-controller"
 )
 
@@ -30,6 +31,7 @@ const maxBodyBytes = 1 << 20
 type Server struct {
 	ctrl  *controller.Controller
 	nodes *node.Registry
+	auth  *auth.Service
 	mux   *http.ServeMux
 }
 
@@ -60,6 +62,7 @@ func NewServer(ctrl *controller.Controller, opts ...Option) *Server {
 	s.mux.HandleFunc("POST /v1/workspaces/{id}/restore", s.transition((*controller.Controller).Restore))
 	s.mux.HandleFunc("GET /v1/workspaces/{id}/exec", s.execWorkspace)
 	s.mux.HandleFunc("GET /terminal/{id}", s.terminalWorkspace)
+	s.authRoutes()
 	s.snapshotRoutes()
 	s.fileRoutes()
 	s.processRoutes()
@@ -67,8 +70,24 @@ func NewServer(ctrl *controller.Controller, opts ...Option) *Server {
 	return s
 }
 
-// ServeHTTP dispatches to the registered routes.
+// ServeHTTP guards /v1/* (except the login endpoint) with bearer auth
+// and dispatches to the registered routes. /healthz and /terminal/* stay
+// open; the terminal page is a static stub whose exec calls authenticate
+// themselves. Every auth failure answers 401 with a single message, so
+// callers learn nothing about which tokens exist.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if strings.HasPrefix(r.URL.Path, "/v1/") && r.URL.Path != "/v1/auth/login" {
+		if s.auth == nil {
+			writeError(w, http.StatusUnauthorized, "authentication required")
+			return
+		}
+		id, err := s.auth.Validate(r.Context(), bearerToken(r))
+		if err != nil {
+			writeError(w, http.StatusUnauthorized, "authentication required")
+			return
+		}
+		r = r.WithContext(auth.ContextWithIdentity(r.Context(), id))
+	}
 	s.mux.ServeHTTP(w, r)
 }
 
