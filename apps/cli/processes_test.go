@@ -10,6 +10,7 @@ import (
 
 func TestPsLogsRoundTrip(t *testing.T) {
 	_, backend, env := newCLIEnv(t)
+	mustLogin(t, env.getenv)
 
 	code, out, stderr := runCLI([]string{"workspace", "create", "dev"}, "", env.getenv)
 	if code != 0 {
@@ -58,6 +59,7 @@ func TestPsLogsRoundTrip(t *testing.T) {
 
 func TestPsLogsUsageErrors(t *testing.T) {
 	_, _, env := newCLIEnv(t)
+	mustLogin(t, env.getenv) // Well-shaped cases must reach the server (404), not 401.
 
 	for _, args := range [][]string{
 		{"ps"},

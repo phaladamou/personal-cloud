@@ -19,6 +19,7 @@ import (
 // returning its id.
 func createAndStart(t *testing.T, env *cliEnv) string {
 	t.Helper()
+	mustLogin(t, env.getenv)
 	if code, _, stderr := runCLI([]string{"workspace", "create", "dev"}, "", env.getenv); code != 0 {
 		t.Fatalf("create: exit %d, stderr %q", code, stderr)
 	}
@@ -92,6 +93,7 @@ func TestExecArgErrors(t *testing.T) {
 
 func TestExecNotRunning(t *testing.T) {
 	_, _, env := newCLIEnv(t)
+	mustLogin(t, env.getenv)
 	code, _, _ := runCLI([]string{"workspace", "create", "dev"}, "", env.getenv)
 	if code != 0 {
 		t.Fatal("create failed")
@@ -120,10 +122,11 @@ func TestExecLiveLocalBackend(t *testing.T) {
 		t.Fatalf("NewFileStore: %v", err)
 	}
 	ctrl := controller.NewController(store, container.DefaultBackend(), protocol.NewEventBus())
-	srv := httptest.NewServer(api.NewServer(ctrl))
+	srv := httptest.NewServer(api.NewServer(ctrl, api.WithAuth(newCLIAuth(t))))
 	t.Cleanup(srv.Close)
 	vars := map[string]string{"PC_CONFIG_DIR": t.TempDir(), "PC_API": srv.URL}
 	getenv := func(k string) string { return vars[k] }
+	mustLogin(t, getenv)
 
 	if code, _, stderr := runCLI([]string{"workspace", "create", "live"}, "", getenv); code != 0 {
 		t.Fatalf("create: exit %d, stderr %q", code, stderr)

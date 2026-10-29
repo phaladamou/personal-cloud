@@ -39,7 +39,7 @@ func newSnapshotCLIEnv(t *testing.T) *snapshotCLIEnv {
 	}
 	ctrl := controller.NewController(store, &controller.FakeBackend{}, protocol.NewEventBus(),
 		controller.WithVolumes(vols), controller.WithSnapshots(snaps))
-	srv := httptest.NewServer(api.NewServer(ctrl))
+	srv := httptest.NewServer(api.NewServer(ctrl, api.WithAuth(newCLIAuth(t))))
 	t.Cleanup(srv.Close)
 	env := &cliEnv{vars: map[string]string{
 		"PC_CONFIG_DIR": t.TempDir(),
@@ -52,6 +52,7 @@ func newSnapshotCLIEnv(t *testing.T) *snapshotCLIEnv {
 func TestSnapshotRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	env := newSnapshotCLIEnv(t)
+	mustLogin(t, env.env.getenv)
 
 	code, out, stderr := runCLI([]string{"workspace", "create", "dev"}, "", env.env.getenv)
 	if code != 0 {
@@ -143,6 +144,7 @@ func TestSnapshotUsageErrors(t *testing.T) {
 
 func TestSnapshotMissingWorkspace(t *testing.T) {
 	env := newSnapshotCLIEnv(t)
+	mustLogin(t, env.env.getenv)
 
 	if code, _, _ := runCLI([]string{"snapshot", "create", "nope"}, "", env.env.getenv); code == 0 {
 		t.Fatal("snapshot create on missing workspace: got exit 0, want failure")
