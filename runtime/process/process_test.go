@@ -112,6 +112,47 @@ func TestLocalLogsAfterExit(t *testing.T) {
 	}
 }
 
+func TestLocalLogsSnapshot(t *testing.T) {
+	pm := NewLocalManager()
+	ctx := context.Background()
+
+	id, err := pm.Start(ctx, StartSpec{Command: "sh", Args: []string{"-c", "echo one; echo two"}})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err := pm.Wait(ctx, id); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	snap, err := pm.LogsSnapshot(ctx, id)
+	if err != nil {
+		t.Fatalf("LogsSnapshot: %v", err)
+	}
+	if string(snap) != "one\ntwo\n" {
+		t.Fatalf("snapshot = %q, want %q", snap, "one\ntwo\n")
+	}
+	// Snapshots never block on a running process with no output yet.
+	slow, err := pm.Start(ctx, StartSpec{Command: "sleep", Args: []string{"30"}})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer pm.Stop(ctx, slow)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if snap, err := pm.LogsSnapshot(ctx, slow); err != nil || len(snap) != 0 {
+			t.Errorf("snapshot running = %q, %v, want empty", snap, err)
+		}
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("LogsSnapshot blocked on a running process")
+	}
+	if _, err := pm.LogsSnapshot(ctx, "nope"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("LogsSnapshot unknown = %v, want ErrNotFound", err)
+	}
+}
+
 func TestLocalStdinEnvDir(t *testing.T) {
 	pm := NewLocalManager()
 	ctx := context.Background()
@@ -305,6 +346,16 @@ func TestFakeProcessManager(t *testing.T) {
 	}
 	if _, err := pm.Wait(ctx, "nope"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("Wait unknown = %v, want ErrNotFound", err)
+	}
+	snap, err := pm.LogsSnapshot(ctx, id)
+	if err != nil {
+		t.Fatalf("LogsSnapshot: %v", err)
+	}
+	if string(snap) != "fake logs\n" {
+		t.Fatalf("snapshot = %q, want %q", snap, "fake logs\n")
+	}
+	if _, err := pm.LogsSnapshot(ctx, "nope"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("LogsSnapshot unknown = %v, want ErrNotFound", err)
 	}
 }
 

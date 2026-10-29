@@ -131,6 +131,22 @@ func (f *FakeProcessManager) Logs(ctx context.Context, id string) (io.ReadCloser
 	return io.NopCloser(strings.NewReader(f.Output)), nil
 }
 
+// LogsSnapshot returns the scripted output without blocking.
+func (f *FakeProcessManager) LogsSnapshot(ctx context.Context, id string) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.LogsErr != nil {
+		return nil, f.LogsErr
+	}
+	if _, ok := f.Specs[id]; !ok {
+		return nil, fmt.Errorf("%w: %s", ErrNotFound, id)
+	}
+	return []byte(f.Output), nil
+}
+
 // Inspect returns metadata for a recorded process.
 func (f *FakeProcessManager) Inspect(ctx context.Context, id string) (Info, error) {
 	if err := ctx.Err(); err != nil {

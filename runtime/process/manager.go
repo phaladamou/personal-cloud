@@ -54,6 +54,9 @@ type ProcessManager interface {
 	// the beginning. Reads block for new output and return io.EOF once
 	// the process exited and the buffer is drained.
 	Logs(ctx context.Context, id string) (io.ReadCloser, error)
+	// LogsSnapshot returns the combined stdout/stderr output buffered
+	// so far, without blocking for new output or process exit.
+	LogsSnapshot(ctx context.Context, id string) ([]byte, error)
 	// Inspect returns a snapshot of the process metadata.
 	Inspect(ctx context.Context, id string) (Info, error)
 }

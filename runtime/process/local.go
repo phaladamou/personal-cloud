@@ -257,6 +257,20 @@ func (r *logReader) Read(b []byte) (int, error) {
 // Close releases the reader. It is a no-op: readers share the buffer.
 func (r *logReader) Close() error { return nil }
 
+// LogsSnapshot returns the output buffered so far.
+func (m *LocalManager) LogsSnapshot(ctx context.Context, id string) ([]byte, error) {
+	p, err := m.lookup(id)
+	if err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]byte(nil), p.logs...), nil
+}
+
 // Inspect returns a snapshot of the process metadata.
 func (m *LocalManager) Inspect(ctx context.Context, id string) (Info, error) {
 	p, err := m.lookup(id)
