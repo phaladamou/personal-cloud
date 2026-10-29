@@ -23,6 +23,10 @@ Commands:
   workspace start <id>
   workspace stop <id>
   workspace delete <id>
+  snapshot create <id> [--volume ID] [--name NAME]
+  snapshot list <id>
+  snapshot restore <id> <snapshot-id>
+  snapshot delete <id> <snapshot-id>
   exec <id> -- <cmd> [args...]   run a command in a workspace
   help                           show this help
 
@@ -81,6 +85,8 @@ func run(args []string, stdout, stderr io.Writer, stdin io.Reader, getenv func(s
 		err = cmdLogin(rest[1:], stdout, getenv)
 	case "workspace":
 		err = cmdWorkspace(client, rest[1:], stdout)
+	case "snapshot":
+		err = cmdSnapshot(client, rest[1:], stdout)
 	case "exec":
 		err = cmdExec(client, rest[1:], execCmd, stdout, stderr, stdin)
 	default:

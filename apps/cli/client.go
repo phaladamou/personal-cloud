@@ -118,3 +118,49 @@ func (c *Client) WorkspaceAction(id, action string) (types.Workspace, error) {
 func (c *Client) DeleteWorkspace(id string) error {
 	return c.do(http.MethodDelete, "/v1/workspaces/"+url.PathEscape(id), nil, nil)
 }
+
+// CreateSnapshot captures the workspace volume state. An empty volumeID
+// snapshots the default volume.
+func (c *Client) CreateSnapshot(workspaceID, volumeID, name string) (types.Snapshot, error) {
+	var snap types.Snapshot
+	body := map[string]string{}
+	if volumeID != "" {
+		body["volume_id"] = volumeID
+	}
+	if name != "" {
+		body["name"] = name
+	}
+	var req any = body
+	if len(body) == 0 {
+		req = nil
+	}
+	err := c.do(http.MethodPost, "/v1/workspaces/"+url.PathEscape(workspaceID)+"/snapshots", req, &snap)
+	return snap, err
+}
+
+// ListSnapshots returns every snapshot of the workspace.
+func (c *Client) ListSnapshots(workspaceID string) ([]types.Snapshot, error) {
+	var out struct {
+		Snapshots []types.Snapshot `json:"snapshots"`
+	}
+	if err := c.do(http.MethodGet, "/v1/workspaces/"+url.PathEscape(workspaceID)+"/snapshots", nil, &out); err != nil {
+		return nil, err
+	}
+	return out.Snapshots, nil
+}
+
+// RestoreSnapshot replaces the snapshot volume content with the
+// captured state and returns the snapshot.
+func (c *Client) RestoreSnapshot(workspaceID, snapshotID string) (types.Snapshot, error) {
+	var snap types.Snapshot
+	err := c.do(http.MethodPost,
+		"/v1/workspaces/"+url.PathEscape(workspaceID)+"/snapshots/"+url.PathEscape(snapshotID)+"/restore",
+		nil, &snap)
+	return snap, err
+}
+
+// DeleteSnapshot deletes a snapshot by id.
+func (c *Client) DeleteSnapshot(workspaceID, snapshotID string) error {
+	return c.do(http.MethodDelete,
+		"/v1/workspaces/"+url.PathEscape(workspaceID)+"/snapshots/"+url.PathEscape(snapshotID), nil, nil)
+}
