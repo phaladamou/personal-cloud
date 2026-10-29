@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"time"
 
 	"github.com/phaladamou/personal-cloud/packages/types"
 )
@@ -79,6 +80,33 @@ func (c *Client) do(method, path string, body, out any) error {
 		}
 	}
 	return nil
+}
+
+// LoginResult is the POST /v1/auth/login answer: the bearer token minted
+// for this device.
+type LoginResult struct {
+	Token     string    `json:"token"`
+	UserID    string    `json:"user_id"`
+	Device    string    `json:"device"`
+	TokenID   string    `json:"token_id"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
+// Login exchanges a device name for a bearer token. An empty userID logs
+// in as the server default owner.
+func (c *Client) Login(device, userID string) (LoginResult, error) {
+	var res LoginResult
+	body := map[string]string{"device": device}
+	if userID != "" {
+		body["user_id"] = userID
+	}
+	if err := c.do(http.MethodPost, "/v1/auth/login", body, &res); err != nil {
+		return LoginResult{}, err
+	}
+	if res.Token == "" {
+		return LoginResult{}, fmt.Errorf("login: server returned no token")
+	}
+	return res, nil
 }
 
 // CreateWorkspace creates a workspace for userID with the given name.
