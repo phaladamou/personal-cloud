@@ -19,9 +19,16 @@ type MemFS struct {
 
 	mu        sync.Mutex
 	files     map[string]memFile
-	snapshots map[string]map[string]memFile
+	dirs      map[string]bool
+	snapshots map[string]memSnapshot
 	seq       int
 	watchers  map[*memWatcher]struct{}
+}
+
+// memSnapshot is a captured copy of the filesystem content.
+type memSnapshot struct {
+	files map[string]memFile
+	dirs  map[string]bool
 }
 
 type memFile struct {
@@ -49,7 +56,8 @@ func NewMemFS(workspaceID, volumeID string) (*MemFS, error) {
 		workspaceID: workspaceID,
 		volumeID:    volumeID,
 		files:       make(map[string]memFile),
-		snapshots:   make(map[string]map[string]memFile),
+		dirs:        make(map[string]bool),
+		snapshots:   make(map[string]memSnapshot),
 		watchers:    make(map[*memWatcher]struct{}),
 	}, nil
 }
@@ -117,6 +125,9 @@ func (m *MemFS) WriteFile(ctx context.Context, p string, data []byte, perm fs.Fi
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.dirs[c] {
+		return fmt.Errorf("filesystem: is a directory: %s", p)
+	}
 	_, existed := m.files[c]
 	if perm == 0 {
 		perm = 0o644
@@ -125,6 +136,30 @@ func (m *MemFS) WriteFile(ctx context.Context, p string, data []byte, perm fs.Fi
 	if existed {
 		m.emitLocked(c, EventModify)
 	} else {
+		m.emitLocked(c, EventCreate)
+	}
+	return nil
+}
+
+// Mkdir creates the directory at path. It is idempotent.
+func (m *MemFS) Mkdir(ctx context.Context, p string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	c, err := clean(p)
+	if err != nil {
+		return err
+	}
+	if c == "" {
+		return nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.files[c]; ok {
+		return fmt.Errorf("filesystem: not a directory: %s", p)
+	}
+	if !m.dirs[c] {
+		m.dirs[c] = true
 		m.emitLocked(c, EventCreate)
 	}
 	return nil
@@ -158,6 +193,15 @@ func (m *MemFS) Move(ctx context.Context, oldPath, newPath string) error {
 		m.files[target] = f
 		moved = true
 	}
+	for d := range m.dirs {
+		if d != src && !strings.HasPrefix(d, src+"/") {
+			continue
+		}
+		target := dst + strings.TrimPrefix(d, src)
+		delete(m.dirs, d)
+		m.dirs[target] = true
+		moved = true
+	}
 	if !moved {
 		return fmt.Errorf("%w: %s", ErrNotFound, oldPath)
 	}
@@ -183,6 +227,13 @@ func (m *MemFS) Delete(ctx context.Context, p string) error {
 			continue
 		}
 		delete(m.files, k)
+		deleted = true
+	}
+	for d := range m.dirs {
+		if d != c && !strings.HasPrefix(d, c+"/") {
+			continue
+		}
+		delete(m.dirs, d)
 		deleted = true
 	}
 	if !deleted {
@@ -217,7 +268,7 @@ func (m *MemFS) Stat(ctx context.Context, p string) (fs.FileInfo, error) {
 	if f, ok := m.files[c]; ok {
 		return memInfo{name: base(c), size: int64(len(f.data)), mode: f.mode, mod: f.mod}, nil
 	}
-	if m.hasDirLocked(c) {
+	if m.dirs[c] || m.hasDirLocked(c) {
 		return memInfo{name: base(c), mode: fs.ModeDir | 0o755, mod: time.Now().UTC(), dir: true}, nil
 	}
 	return nil, fmt.Errorf("%w: %s", ErrNotFound, p)
@@ -242,24 +293,35 @@ func (m *MemFS) List(ctx context.Context, dir string) ([]fs.DirEntry, error) {
 	if prefix != "" {
 		prefix += "/"
 	}
-	for k, f := range m.files {
-		rest, ok := strings.CutPrefix(k, prefix)
+	addChild := func(key string, f memFile, explicitDir bool) {
+		rest, ok := strings.CutPrefix(key, prefix)
 		if c != "" && !ok {
-			continue
+			return
 		}
 		name := rest
-		isDir := false
+		isDir := explicitDir
+		var mod time.Time
 		if i := strings.Index(rest, "/"); i >= 0 {
 			name, isDir = rest[:i], true
 		}
 		if _, dup := seen[name]; dup {
-			continue
+			return
 		}
 		if isDir {
-			seen[name] = memEntry{info: memInfo{name: name, mode: fs.ModeDir | 0o755, mod: f.mod, dir: true}}
+			mod = f.mod
+			if mod.IsZero() {
+				mod = time.Now().UTC()
+			}
+			seen[name] = memEntry{info: memInfo{name: name, mode: fs.ModeDir | 0o755, mod: mod, dir: true}}
 		} else {
 			seen[name] = memEntry{info: memInfo{name: name, size: int64(len(f.data)), mode: f.mode, mod: f.mod}}
 		}
+	}
+	for k, f := range m.files {
+		addChild(k, f, false)
+	}
+	for d := range m.dirs {
+		addChild(d, memFile{}, true)
 	}
 	entries := make([]fs.DirEntry, 0, len(seen))
 	for _, e := range seen {
@@ -310,8 +372,12 @@ func (m *MemFS) Snapshot(ctx context.Context, name string) (types.Snapshot, erro
 		cp[k] = memFile{data: append([]byte(nil), f.data...), mode: f.mode, mod: f.mod}
 		size += int64(len(f.data))
 	}
+	dirs := make(map[string]bool, len(m.dirs))
+	for d := range m.dirs {
+		dirs[d] = true
+	}
 	snap.SizeBytes = size
-	m.snapshots[id] = cp
+	m.snapshots[id] = memSnapshot{files: cp, dirs: dirs}
 	return snap, nil
 }
 
@@ -326,11 +392,16 @@ func (m *MemFS) Restore(ctx context.Context, snapshotID string) error {
 	if !ok {
 		return fmt.Errorf("%w: snapshot %s", ErrNotFound, snapshotID)
 	}
-	next := make(map[string]memFile, len(cp))
-	for k, f := range cp {
+	next := make(map[string]memFile, len(cp.files))
+	for k, f := range cp.files {
 		next[k] = memFile{data: append([]byte(nil), f.data...), mode: f.mode, mod: f.mod}
 	}
 	m.files = next
+	dirs := make(map[string]bool, len(cp.dirs))
+	for d := range cp.dirs {
+		dirs[d] = true
+	}
+	m.dirs = dirs
 	return nil
 }
 

@@ -1,8 +1,8 @@
 // Package filesystem abstracts the workspace filesystem.
 //
-// It defines the FS interface (read, write, move, delete, watch and
-// snapshot/restore hooks), a local directory-backed implementation rooted
-// at a workspace path and an in-memory fake for tests.
+// It defines the FS interface (read, write, mkdir, move, delete, watch
+// and snapshot/restore hooks), a local directory-backed implementation
+// rooted at a workspace path and an in-memory fake for tests.
 package filesystem
 
 import (
@@ -50,6 +50,9 @@ type FS interface {
 	ReadFile(ctx context.Context, path string) ([]byte, error)
 	// WriteFile stores data at path, creating parent directories.
 	WriteFile(ctx context.Context, path string, data []byte, perm fs.FileMode) error
+	// Mkdir creates the directory at path with its parents. It is
+	// idempotent: an existing directory is not an error.
+	Mkdir(ctx context.Context, path string) error
 	// Move renames oldPath to newPath, creating parent directories.
 	Move(ctx context.Context, oldPath, newPath string) error
 	// Delete removes the file or directory at path.
