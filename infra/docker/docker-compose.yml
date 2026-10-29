@@ -1,0 +1,19 @@
+# Local development stack (Phase 1: API only, no external services).
+#
+# Run from the repository root:
+#   docker compose -f infra/docker/docker-compose.yml up --build
+# The API listens on http://localhost:8080 (GET /healthz).
+
+services:
+  api:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile
+    ports:
+      - "8080:8080"
+    volumes:
+      - pc-data:/app/data
+    restart: unless-stopped
+
+volumes:
+  pc-data:
