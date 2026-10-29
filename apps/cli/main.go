@@ -23,6 +23,7 @@ Commands:
   workspace start <id>
   workspace stop <id>
   workspace delete <id>
+  exec <id> -- <cmd> [args...]   run a command in a workspace
   help                           show this help
 
 Options:
@@ -44,7 +45,6 @@ func run(args []string, stdout, stderr io.Writer, stdin io.Reader, getenv func(s
 		cliArgs = args[:i]
 		execCmd = args[i+1:]
 	}
-	_ = execCmd // wired by the exec command (next commit)
 
 	var apiFlag string
 	var rest []string
@@ -81,6 +81,8 @@ func run(args []string, stdout, stderr io.Writer, stdin io.Reader, getenv func(s
 		err = cmdLogin(rest[1:], stdout, getenv)
 	case "workspace":
 		err = cmdWorkspace(client, rest[1:], stdout)
+	case "exec":
+		err = cmdExec(client, rest[1:], execCmd, stdout, stderr, stdin)
 	default:
 		err = fmt.Errorf("unknown command %q (run \"pc help\")", rest[0])
 	}
