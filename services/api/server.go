@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/phaladamou/personal-cloud/compute/node"
 	"github.com/phaladamou/personal-cloud/packages/types"
 	"github.com/phaladamou/personal-cloud/runtime/container"
 	"github.com/phaladamou/personal-cloud/services/api/internal/ws"
@@ -27,13 +28,26 @@ const maxBodyBytes = 1 << 20
 
 // Server is the HTTP control-plane API.
 type Server struct {
-	ctrl *controller.Controller
-	mux  *http.ServeMux
+	ctrl  *controller.Controller
+	nodes *node.Registry
+	mux   *http.ServeMux
+}
+
+// Option configures a Server.
+type Option func(*Server)
+
+// WithNodes attaches the node registry serving /v1/nodes. Without it
+// the node endpoints answer 501.
+func WithNodes(r *node.Registry) Option {
+	return func(s *Server) { s.nodes = r }
 }
 
 // NewServer builds a Server over ctrl and registers its routes.
-func NewServer(ctrl *controller.Controller) *Server {
+func NewServer(ctrl *controller.Controller, opts ...Option) *Server {
 	s := &Server{ctrl: ctrl, mux: http.NewServeMux()}
+	for _, opt := range opts {
+		opt(s)
+	}
 	s.mux.HandleFunc("GET /healthz", s.healthz)
 	s.mux.HandleFunc("POST /v1/workspaces", s.createWorkspace)
 	s.mux.HandleFunc("GET /v1/workspaces", s.listWorkspaces)
@@ -46,6 +60,10 @@ func NewServer(ctrl *controller.Controller) *Server {
 	s.mux.HandleFunc("POST /v1/workspaces/{id}/restore", s.transition((*controller.Controller).Restore))
 	s.mux.HandleFunc("GET /v1/workspaces/{id}/exec", s.execWorkspace)
 	s.mux.HandleFunc("GET /terminal/{id}", s.terminalWorkspace)
+	s.snapshotRoutes()
+	s.fileRoutes()
+	s.processRoutes()
+	s.nodeRoutes()
 	return s
 }
 

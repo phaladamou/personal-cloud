@@ -145,6 +145,24 @@ func (l *LocalFS) WriteFile(ctx context.Context, path string, data []byte, perm 
 	return os.WriteFile(full, data, perm)
 }
 
+// Mkdir creates the directory at path with its parents.
+func (l *LocalFS) Mkdir(ctx context.Context, path string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	full, err := l.resolve(path)
+	if err != nil {
+		return err
+	}
+	if err := l.checkReserved(full); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(full, 0o755); err != nil {
+		return fmt.Errorf("filesystem: mkdir: %w", err)
+	}
+	return nil
+}
+
 // Move renames oldPath to newPath, creating parent directories.
 func (l *LocalFS) Move(ctx context.Context, oldPath, newPath string) error {
 	if err := ctx.Err(); err != nil {

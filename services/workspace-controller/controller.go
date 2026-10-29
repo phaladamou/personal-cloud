@@ -11,6 +11,8 @@ import (
 	"github.com/phaladamou/personal-cloud/packages/protocol"
 	"github.com/phaladamou/personal-cloud/packages/types"
 	"github.com/phaladamou/personal-cloud/runtime/container"
+	"github.com/phaladamou/personal-cloud/storage/snapshots"
+	"github.com/phaladamou/personal-cloud/storage/volumes"
 )
 
 // ErrIllegalTransition is returned when an operation is not allowed in
@@ -47,6 +49,19 @@ var defaultInitCommand = []string{"sleep", "infinity"}
 // delete. The workspace id -> container id mapping is in memory only in
 // Phase 1: a controller restart re-creates containers on next Start.
 //
+// Storage (see storage.go) is optional: volume and snapshot operations
+// delegate to the configured managers and CreateSnapshot emits
+// snapshot.created. Without managers they return ErrVolumesUnavailable
+// / ErrSnapshotsUnavailable.
+//
+// Files (see files.go) are optional too: file operations delegate to
+// the configured FilesystemProvider and emit file.changed on every
+// mutation. Without a provider they return ErrFilesystemsUnavailable.
+//
+// Processes (see processes.go) list the container processes and stream
+// their logs. Exec emits process.started, process.stdout and
+// process.exited for every command.
+//
 // A nil bus disables event publishing. Methods are safe for concurrent
 // use.
 type Controller struct {
@@ -54,6 +69,9 @@ type Controller struct {
 	backend container.ContainerBackend
 	bus     *protocol.EventBus
 	initCmd []string
+	vols    volumes.VolumeManager
+	snaps   snapshots.SnapshotManager
+	fs      FilesystemProvider
 
 	mu         sync.Mutex
 	containers map[string]string
@@ -313,8 +331,9 @@ func (c *Controller) Restore(ctx context.Context, id string) (types.Workspace, e
 	return ws, nil
 }
 
-// Delete removes a CREATED, STOPPED, or SLEEPING workspace and its
-// container. A missing container is ignored.
+// Delete removes a CREATED, STOPPED, or SLEEPING workspace, its
+// container, and (best-effort) its volumes and snapshots. A missing
+// container is ignored.
 func (c *Controller) Delete(ctx context.Context, id string) error {
 	ws, err := c.store.Get(ctx, id)
 	if err != nil {
@@ -329,22 +348,37 @@ func (c *Controller) Delete(ctx context.Context, id string) error {
 		}
 		c.unbindContainer(id)
 	}
-	return c.store.Delete(ctx, id)
+	if err := c.store.Delete(ctx, id); err != nil {
+		return err
+	}
+	c.cleanupStorage(ctx, id)
+	return nil
 }
 
 // Exec runs a command in the workspace container. The workspace must be
-// RUNNING.
+// RUNNING. It emits process.started before the command runs,
+// process.stdout per output chunk, and process.exited once it finishes;
+// all three share the exec process id (opts.ExecID, generated when
+// empty), which is also the id under Processes/ProcessLogs.
 func (c *Controller) Exec(ctx context.Context, id string, opts container.ExecOptions) error {
-	ws, err := c.store.Get(ctx, id)
+	ws, ctrID, opts, err := c.prepareExec(ctx, id, opts)
 	if err != nil {
 		return err
 	}
-	if ws.Status != types.WorkspaceRunning {
-		return fmt.Errorf("%w: cannot exec in workspace in %s", ErrIllegalTransition, ws.Status)
+	c.emitProcess(ws.ID, protocol.EventProcessStarted,
+		processStartedPayload{ProcessID: opts.ExecID, Command: opts.Cmd})
+	if opts.Stdout != nil {
+		opts.Stdout = eventWriter{bus: c.bus, workspaceID: ws.ID, processID: opts.ExecID, dst: opts.Stdout}
 	}
-	ctrID, ok := c.containerFor(id)
-	if !ok {
-		return fmt.Errorf("controller: exec %s: no container bound", id)
+	if opts.Stderr != nil {
+		opts.Stderr = eventWriter{bus: c.bus, workspaceID: ws.ID, processID: opts.ExecID, dst: opts.Stderr}
 	}
-	return c.backend.Exec(ctx, ctrID, opts)
+	runErr := c.backend.Exec(ctx, ctrID, opts)
+	exited := processExitedPayload{ProcessID: opts.ExecID}
+	if runErr != nil {
+		exited.ExitCode = -1
+		exited.Error = runErr.Error()
+	}
+	c.emitProcess(ws.ID, protocol.EventProcessExited, exited)
+	return runErr
 }

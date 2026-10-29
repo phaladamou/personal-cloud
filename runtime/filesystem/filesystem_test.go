@@ -307,3 +307,90 @@ func TestMemFSWatchSnapshot(t *testing.T) {
 		t.Fatalf("Restore unknown = %v, want ErrNotFound", err)
 	}
 }
+
+func TestMkdirBothBackends(t *testing.T) {
+	backends := map[string]FS{}
+	backends["local"] = newTestFS(t)
+	mfs, err := NewMemFS("ws-1", "vol-1")
+	if err != nil {
+		t.Fatalf("NewMemFS: %v", err)
+	}
+	backends["mem"] = mfs
+
+	for name, fsys := range backends {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			if err := fsys.Mkdir(ctx, "a/b"); err != nil {
+				t.Fatalf("Mkdir: %v", err)
+			}
+			// Idempotent, and root is a no-op.
+			if err := fsys.Mkdir(ctx, "a/b"); err != nil {
+				t.Fatalf("Mkdir again: %v", err)
+			}
+			if err := fsys.Mkdir(ctx, ""); err != nil {
+				t.Fatalf("Mkdir root: %v", err)
+			}
+			st, err := fsys.Stat(ctx, "a/b")
+			if err != nil || !st.IsDir() {
+				t.Fatalf("Stat = %v, %v, want dir", st, err)
+			}
+			entries, err := fsys.List(ctx, "a/b")
+			if err != nil || len(entries) != 0 {
+				t.Fatalf("List empty dir = %v, %v, want empty", entries, err)
+			}
+			entries, err = fsys.List(ctx, "")
+			if err != nil {
+				t.Fatalf("List root: %v", err)
+			}
+			if len(entries) != 1 || entries[0].Name() != "a" || !entries[0].IsDir() {
+				t.Fatalf("List root = %v, want [a/]", entries)
+			}
+			// A file blocks a directory of the same name.
+			if err := fsys.WriteFile(ctx, "f.txt", []byte("x"), 0); err != nil {
+				t.Fatalf("WriteFile: %v", err)
+			}
+			if err := fsys.Mkdir(ctx, "f.txt"); err == nil {
+				t.Fatal("Mkdir over file: want error, got nil")
+			}
+			// Traversal is rejected.
+			if err := fsys.Mkdir(ctx, "../evil"); !errors.Is(err, ErrPathEscape) {
+				t.Fatalf("Mkdir escape = %v, want ErrPathEscape", err)
+			}
+			if err := fsys.Delete(ctx, "a"); err != nil {
+				t.Fatalf("Delete dir: %v", err)
+			}
+			if _, err := fsys.Stat(ctx, "a/b"); !errors.Is(err, ErrNotFound) {
+				t.Fatalf("Stat deleted = %v, want ErrNotFound", err)
+			}
+		})
+	}
+}
+
+func TestMemFSMkdirSnapshot(t *testing.T) {
+	mfs, err := NewMemFS("ws-1", "vol-1")
+	if err != nil {
+		t.Fatalf("NewMemFS: %v", err)
+	}
+	ctx := context.Background()
+
+	if err := mfs.Mkdir(ctx, "keep"); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+	snap, err := mfs.Snapshot(ctx, "with-dir")
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	if err := mfs.Delete(ctx, "keep"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if err := mfs.Restore(ctx, snap.ID); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	st, err := mfs.Stat(ctx, "keep")
+	if err != nil || !st.IsDir() {
+		t.Fatalf("Stat restored dir = %v, %v, want dir", st, err)
+	}
+	if err := mfs.WriteFile(ctx, "keep", []byte("x"), 0); err == nil {
+		t.Fatal("WriteFile over dir: want error, got nil")
+	}
+}

@@ -362,3 +362,36 @@ func TestEnumStrings(t *testing.T) {
 		t.Fatalf("bogus enum values should be invalid")
 	}
 }
+
+func TestNewFileEntry(t *testing.T) {
+	e, err := NewFileEntry("docs/readme.md", "readme.md", false, 12, nowUTC())
+	if err != nil {
+		t.Fatalf("NewFileEntry: %v", err)
+	}
+	if e.Path != "docs/readme.md" || e.Name != "readme.md" || e.IsDir || e.Size != 12 {
+		t.Fatalf("NewFileEntry fields: got %+v", e)
+	}
+	if got := e.String(); !strings.Contains(got, "docs/readme.md") {
+		t.Fatalf("String: got %q", got)
+	}
+	d, err := NewFileEntry("docs", "docs", true, 0, nowUTC())
+	if err != nil {
+		t.Fatalf("NewFileEntry dir: %v", err)
+	}
+	if !d.IsDir || !strings.HasSuffix(d.String(), "(dir)") {
+		t.Fatalf("dir entry: got %+v / %q", d, d.String())
+	}
+	for name, args := range map[string]struct {
+		path, entry string
+		size        int64
+	}{
+		"empty path": {path: "", entry: "x"},
+		"blank path": {path: "  ", entry: "x"},
+		"empty name": {path: "x", entry: ""},
+		"neg size":   {path: "x", entry: "x", size: -1},
+	} {
+		if _, err := NewFileEntry(args.path, args.entry, false, args.size, nowUTC()); err == nil {
+			t.Fatalf("%s: got nil error", name)
+		}
+	}
+}

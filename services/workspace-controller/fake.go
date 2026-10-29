@@ -3,15 +3,26 @@ package controller
 import (
 	"context"
 	"fmt"
+	"io"
+	"strings"
 	"sync"
 
 	"github.com/phaladamou/personal-cloud/runtime/container"
+	"github.com/phaladamou/personal-cloud/runtime/process"
 )
 
 // FakeExec records one Exec call on a FakeBackend.
 type FakeExec struct {
-	ID  string
-	Cmd []string
+	ID     string
+	Cmd    []string
+	ExecID string
+}
+
+// FakeLogCall records one Logs call on a FakeBackend.
+type FakeLogCall struct {
+	ID        string
+	ProcessID string
+	Follow    bool
 }
 
 // FakeBackend is an in-memory scripted ContainerBackend for tests.
@@ -20,23 +31,28 @@ type FakeExec struct {
 // Stop back to STOPPED. Calls are recorded in Configs and Execs for
 // assertions. The zero value is ready to use.
 type FakeBackend struct {
-	mu         sync.Mutex
-	seq        int
-	Configs    map[string]container.Config
-	States     map[string]container.State
-	Execs      []FakeExec
-	Starts     int
-	Stops      int
-	Removes    int
-	ExecOutput string
-	ExecFunc   func(ctx context.Context, id string, opts container.ExecOptions) error
+	mu            sync.Mutex
+	seq           int
+	Configs       map[string]container.Config
+	States        map[string]container.State
+	Execs         []FakeExec
+	Starts        int
+	Stops         int
+	Removes       int
+	ExecOutput    string
+	ExecFunc      func(ctx context.Context, id string, opts container.ExecOptions) error
+	ProcessesList []process.Info
+	LogCalls      []FakeLogCall
+	LogsOutput    string
 
-	CreateErr  error
-	StartErr   error
-	StopErr    error
-	RemoveErr  error
-	ExecErr    error
-	InspectErr error
+	CreateErr    error
+	StartErr     error
+	StopErr      error
+	RemoveErr    error
+	ExecErr      error
+	InspectErr   error
+	ProcessesErr error
+	LogsErr      error
 }
 
 var _ container.ContainerBackend = (*FakeBackend)(nil)
@@ -142,7 +158,7 @@ func (f *FakeBackend) Exec(ctx context.Context, id string, opts container.ExecOp
 	output := f.ExecOutput
 	execErr := f.ExecErr
 	cmd := append([]string(nil), opts.Cmd...)
-	f.Execs = append(f.Execs, FakeExec{ID: id, Cmd: cmd})
+	f.Execs = append(f.Execs, FakeExec{ID: id, Cmd: cmd, ExecID: opts.ExecID})
 	stdout := opts.Stdout
 	f.mu.Unlock()
 	if !ok {
@@ -177,4 +193,45 @@ func (f *FakeBackend) Inspect(ctx context.Context, id string) (container.Info, e
 		return container.Info{}, fmt.Errorf("%w: %s", container.ErrNotFound, id)
 	}
 	return container.Info{ID: id, Name: f.Configs[id].Name, State: st}, nil
+}
+
+// Processes returns the scripted process list for a known container.
+func (f *FakeBackend) Processes(ctx context.Context, id string) ([]process.Info, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.ProcessesErr != nil {
+		return nil, f.ProcessesErr
+	}
+	if _, ok := f.States[id]; !ok {
+		return nil, fmt.Errorf("%w: %s", container.ErrNotFound, id)
+	}
+	out := make([]process.Info, len(f.ProcessesList))
+	copy(out, f.ProcessesList)
+	return out, nil
+}
+
+// Logs records the call and returns the scripted output for a known
+// container and a scripted process id.
+func (f *FakeBackend) Logs(ctx context.Context, id, processID string, follow bool) (io.ReadCloser, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.LogsErr != nil {
+		return nil, f.LogsErr
+	}
+	if _, ok := f.States[id]; !ok {
+		return nil, fmt.Errorf("%w: %s", container.ErrNotFound, id)
+	}
+	f.LogCalls = append(f.LogCalls, FakeLogCall{ID: id, ProcessID: processID, Follow: follow})
+	for _, p := range f.ProcessesList {
+		if p.ID == processID {
+			return io.NopCloser(strings.NewReader(f.LogsOutput)), nil
+		}
+	}
+	return nil, fmt.Errorf("%w: %s in container %s", container.ErrProcessNotFound, processID, id)
 }
