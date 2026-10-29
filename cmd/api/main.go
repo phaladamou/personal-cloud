@@ -18,6 +18,7 @@ import (
 	"github.com/phaladamou/personal-cloud/runtime/container"
 	"github.com/phaladamou/personal-cloud/services/api"
 	"github.com/phaladamou/personal-cloud/services/auth"
+	"github.com/phaladamou/personal-cloud/services/gateway"
 	controller "github.com/phaladamou/personal-cloud/services/workspace-controller"
 	"github.com/phaladamou/personal-cloud/storage/snapshots"
 	"github.com/phaladamou/personal-cloud/storage/volumes"
@@ -28,6 +29,7 @@ func main() {
 	data := flag.String("data", "./data/workspaces.json", "path of the JSON workspace store")
 	storage := flag.String("storage", "./data/storage", "root directory for volumes and snapshots")
 	authSecret := flag.String("auth-secret", "", "HMAC secret for auth tokens (env PC_AUTH_SECRET, else generated under storage)")
+	gatewayMode := flag.Bool("gateway", true, "front the API with the authenticating gateway (ports proxy, guarded terminal)")
 	flag.Parse()
 
 	if dir := filepath.Dir(*data); dir != "" {
@@ -72,8 +74,13 @@ func main() {
 		controller.WithFilesystems(controller.VolumeFSProvider{Volumes: vols, DataPath: vols.DataPath}))
 
 	log.Printf("api: listening on %s (store %s, storage %s)", *addr, *data, *storage)
-	srv := api.NewServer(ctrl, api.WithNodes(node.NewRegistry(bus)), api.WithAuth(authSvc))
-	if err := http.ListenAndServe(*addr, srv); err != nil {
+	apiSrv := api.NewServer(ctrl, api.WithNodes(node.NewRegistry(bus)), api.WithAuth(authSvc))
+	var handler http.Handler = apiSrv
+	if *gatewayMode {
+		handler = gateway.New(gateway.NewRegistry(), apiSrv, gateway.WithAuth(authSvc))
+		log.Printf("api: gateway in front (ports proxy on; only login and healthz stay open)")
+	}
+	if err := http.ListenAndServe(*addr, handler); err != nil {
 		log.Fatalf("api: serve: %v", err)
 	}
 }
