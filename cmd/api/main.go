@@ -43,8 +43,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("api: open snapshots: %v", err)
 	}
-	ctrl := controller.NewController(store, container.DefaultBackend(), protocol.NewEventBus(),
-		controller.WithVolumes(vols), controller.WithSnapshots(snaps))
+	bus := protocol.NewEventBus()
+	ctrl := controller.NewController(store, container.DefaultBackend(), bus,
+		controller.WithVolumes(vols), controller.WithSnapshots(snaps),
+		controller.WithFilesystems(controller.DirFSProvider{Root: filepath.Join(*storage, "workspaces")}))
 
 	log.Printf("api: listening on %s (store %s, storage %s)", *addr, *data, *storage)
 	if err := http.ListenAndServe(*addr, api.NewServer(ctrl)); err != nil {
