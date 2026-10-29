@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/phaladamou/personal-cloud/compute/node"
 	"github.com/phaladamou/personal-cloud/packages/protocol"
 	"github.com/phaladamou/personal-cloud/runtime/container"
 	"github.com/phaladamou/personal-cloud/services/api"
@@ -49,7 +50,7 @@ func main() {
 		controller.WithFilesystems(controller.DirFSProvider{Root: filepath.Join(*storage, "workspaces")}))
 
 	log.Printf("api: listening on %s (store %s, storage %s)", *addr, *data, *storage)
-	if err := http.ListenAndServe(*addr, api.NewServer(ctrl)); err != nil {
+	if err := http.ListenAndServe(*addr, api.NewServer(ctrl, api.WithNodes(node.NewRegistry(bus)))); err != nil {
 		log.Fatalf("api: serve: %v", err)
 	}
 }
