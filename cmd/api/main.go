@@ -19,6 +19,7 @@ import (
 	"github.com/phaladamou/personal-cloud/services/api"
 	"github.com/phaladamou/personal-cloud/services/auth"
 	"github.com/phaladamou/personal-cloud/services/gateway"
+	"github.com/phaladamou/personal-cloud/services/scheduler"
 	controller "github.com/phaladamou/personal-cloud/services/workspace-controller"
 	"github.com/phaladamou/personal-cloud/storage/snapshots"
 	"github.com/phaladamou/personal-cloud/storage/volumes"
@@ -69,12 +70,14 @@ func main() {
 	}
 
 	bus := protocol.NewEventBus()
+	nodes := node.NewRegistry(bus)
 	ctrl := controller.NewController(store, container.DefaultBackend(), bus,
 		controller.WithVolumes(vols), controller.WithSnapshots(snaps),
-		controller.WithFilesystems(controller.VolumeFSProvider{Volumes: vols, DataPath: vols.DataPath}))
+		controller.WithFilesystems(controller.VolumeFSProvider{Volumes: vols, DataPath: vols.DataPath}),
+		controller.WithScheduler(scheduler.New(nodes)))
 
 	log.Printf("api: listening on %s (store %s, storage %s)", *addr, *data, *storage)
-	apiSrv := api.NewServer(ctrl, api.WithNodes(node.NewRegistry(bus)), api.WithAuth(authSvc))
+	apiSrv := api.NewServer(ctrl, api.WithNodes(nodes), api.WithAuth(authSvc))
 	var handler http.Handler = apiSrv
 	if *gatewayMode {
 		handler = gateway.New(gateway.NewRegistry(), apiSrv, gateway.WithAuth(authSvc))
