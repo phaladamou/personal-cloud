@@ -14,8 +14,9 @@ import (
 
 // nodesEnv wires the API over a node registry.
 type nodesEnv struct {
-	srv *httptest.Server
-	bus *protocol.EventBus
+	srv   *httptest.Server
+	bus   *protocol.EventBus
+	token string
 }
 
 func newNodesEnv(t *testing.T) *nodesEnv {
@@ -26,9 +27,10 @@ func newNodesEnv(t *testing.T) *nodesEnv {
 	}
 	bus := protocol.NewEventBus()
 	ctrl := controller.NewController(store, &controller.FakeBackend{}, bus)
-	srv := httptest.NewServer(NewServer(ctrl, WithNodes(node.NewRegistry(bus))))
+	authSvc, token := newTestAuth(t)
+	srv := httptest.NewServer(NewServer(ctrl, WithNodes(node.NewRegistry(bus)), WithAuth(authSvc)))
 	t.Cleanup(srv.Close)
-	return &nodesEnv{srv: srv, bus: bus}
+	return &nodesEnv{srv: srv, bus: bus, token: token}
 }
 
 func TestNodeFlow(t *testing.T) {
@@ -37,7 +39,7 @@ func TestNodeFlow(t *testing.T) {
 	env.bus.Subscribe(protocol.EventNodeConnected, func(e protocol.Event) { connected = append(connected, e) })
 	env.bus.Subscribe(protocol.EventNodeDisconnected, func(e protocol.Event) { disconnected = append(disconnected, e) })
 
-	code, created := doJSON(t, http.MethodPost, env.srv.URL+"/v1/nodes", map[string]any{
+	code, created := doJSON(t, env.token, http.MethodPost, env.srv.URL+"/v1/nodes", map[string]any{
 		"name": "gpu-1", "cpu": 8, "memory_mb": 32768, "disk_gb": 500, "gpus": 1,
 		"labels": map[string]string{"zone": "eu"},
 	})
@@ -56,19 +58,20 @@ func TestNodeFlow(t *testing.T) {
 		t.Fatalf("connected payload: got %+v, %v", payload, err)
 	}
 
-	code, list := doJSON(t, http.MethodGet, env.srv.URL+"/v1/nodes", nil)
+	code, list := doJSON(t, env.token, http.MethodGet, env.srv.URL+"/v1/nodes", nil)
 	if code != http.StatusOK {
 		t.Fatalf("list: got %d", code)
 	}
 	if items, _ := list["nodes"].([]any); len(items) != 1 {
 		t.Fatalf("list: got %v, want 1 node", list)
 	}
-	code, single := doJSON(t, http.MethodGet, env.srv.URL+"/v1/nodes/"+id, nil)
+	code, single := doJSON(t, env.token, http.MethodGet, env.srv.URL+"/v1/nodes/"+id, nil)
 	if code != http.StatusOK || single["id"] != id {
 		t.Fatalf("get: got %d %v", code, single)
 	}
 
 	req, _ := http.NewRequest(http.MethodDelete, env.srv.URL+"/v1/nodes/"+id, nil)
+	req.Header.Set("Authorization", "Bearer "+env.token)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("unregister: %v", err)
@@ -83,7 +86,7 @@ func TestNodeFlow(t *testing.T) {
 	if err := disconnected[0].DecodePayload(&payload); err != nil || payload.ID != id {
 		t.Fatalf("disconnected payload: got %+v, %v", payload, err)
 	}
-	if code, _ := doJSON(t, http.MethodGet, env.srv.URL+"/v1/nodes/"+id, nil); code != http.StatusNotFound {
+	if code, _ := doJSON(t, env.token, http.MethodGet, env.srv.URL+"/v1/nodes/"+id, nil); code != http.StatusNotFound {
 		t.Fatalf("get after unregister: got %d, want 404", code)
 	}
 }
@@ -98,14 +101,15 @@ func TestNodeErrors(t *testing.T) {
 		"zero disk":   map[string]any{"name": "n", "cpu": 2, "memory_mb": 1024},
 		"wrong shape": "just a string",
 	} {
-		if code, _ := doJSON(t, http.MethodPost, env.srv.URL+"/v1/nodes", body); code != http.StatusBadRequest {
+		if code, _ := doJSON(t, env.token, http.MethodPost, env.srv.URL+"/v1/nodes", body); code != http.StatusBadRequest {
 			t.Fatalf("register %s: got %d, want 400", name, code)
 		}
 	}
-	if code, _ := doJSON(t, http.MethodGet, env.srv.URL+"/v1/nodes/nope", nil); code != http.StatusNotFound {
+	if code, _ := doJSON(t, env.token, http.MethodGet, env.srv.URL+"/v1/nodes/nope", nil); code != http.StatusNotFound {
 		t.Fatalf("get unknown: got %d, want 404", code)
 	}
 	req, _ := http.NewRequest(http.MethodDelete, env.srv.URL+"/v1/nodes/nope", nil)
+	req.Header.Set("Authorization", "Bearer "+env.token)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("unregister unknown: %v", err)
@@ -119,16 +123,17 @@ func TestNodeErrors(t *testing.T) {
 func TestNodesUnavailable(t *testing.T) {
 	env := newTestEnv(t) // No node registry.
 
-	if code, _ := doJSON(t, http.MethodPost, env.srv.URL+"/v1/nodes", map[string]any{"name": "n"}); code != http.StatusNotImplemented {
+	if code, _ := doJSON(t, env.token, http.MethodPost, env.srv.URL+"/v1/nodes", map[string]any{"name": "n"}); code != http.StatusNotImplemented {
 		t.Fatalf("register without registry: got %d, want 501", code)
 	}
-	if code, _ := doJSON(t, http.MethodGet, env.srv.URL+"/v1/nodes", nil); code != http.StatusNotImplemented {
+	if code, _ := doJSON(t, env.token, http.MethodGet, env.srv.URL+"/v1/nodes", nil); code != http.StatusNotImplemented {
 		t.Fatalf("list without registry: got %d, want 501", code)
 	}
-	if code, _ := doJSON(t, http.MethodGet, env.srv.URL+"/v1/nodes/n", nil); code != http.StatusNotImplemented {
+	if code, _ := doJSON(t, env.token, http.MethodGet, env.srv.URL+"/v1/nodes/n", nil); code != http.StatusNotImplemented {
 		t.Fatalf("get without registry: got %d, want 501", code)
 	}
 	req, _ := http.NewRequest(http.MethodDelete, env.srv.URL+"/v1/nodes/n", nil)
+	req.Header.Set("Authorization", "Bearer "+env.token)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("unregister without registry: %v", err)

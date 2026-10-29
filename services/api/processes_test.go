@@ -20,6 +20,7 @@ type procsEnv struct {
 	srv     *httptest.Server
 	ctrl    *controller.Controller
 	backend *controller.FakeBackend
+	token   string
 }
 
 func newProcsEnv(t *testing.T) *procsEnv {
@@ -30,14 +31,15 @@ func newProcsEnv(t *testing.T) *procsEnv {
 	}
 	backend := &controller.FakeBackend{}
 	ctrl := controller.NewController(store, backend, protocol.NewEventBus())
-	srv := httptest.NewServer(NewServer(ctrl))
+	authSvc, token := newTestAuth(t)
+	srv := httptest.NewServer(NewServer(ctrl, WithAuth(authSvc)))
 	t.Cleanup(srv.Close)
-	return &procsEnv{srv: srv, ctrl: ctrl, backend: backend}
+	return &procsEnv{srv: srv, ctrl: ctrl, backend: backend, token: token}
 }
 
-func startWorkspace(t *testing.T, base, id string) {
+func startWorkspace(t *testing.T, token, base, id string) {
 	t.Helper()
-	code, body := doJSON(t, http.MethodPost, base+"/v1/workspaces/"+id+"/start", nil)
+	code, body := doJSON(t, token, http.MethodPost, base+"/v1/workspaces/"+id+"/start", nil)
 	if code != http.StatusOK {
 		t.Fatalf("start: got %d (%v), want 200", code, body)
 	}
@@ -45,13 +47,13 @@ func startWorkspace(t *testing.T, base, id string) {
 
 func TestProcessFlow(t *testing.T) {
 	env := newProcsEnv(t)
-	code, created := doJSON(t, http.MethodPost, env.srv.URL+"/v1/workspaces",
+	code, created := doJSON(t, env.token, http.MethodPost, env.srv.URL+"/v1/workspaces",
 		map[string]string{"user_id": "user-1", "name": "dev"})
 	if code != http.StatusCreated {
 		t.Fatalf("create workspace: got %d", code)
 	}
 	id := created["id"].(string)
-	startWorkspace(t, env.srv.URL, id)
+	startWorkspace(t, env.token, env.srv.URL, id)
 
 	codeZero := 0
 	env.backend.ProcessesList = []process.Info{
@@ -62,7 +64,7 @@ func TestProcessFlow(t *testing.T) {
 	}
 	env.backend.LogsOutput = "hi\n"
 
-	code, list := doJSON(t, http.MethodGet, env.srv.URL+"/v1/workspaces/"+id+"/processes", nil)
+	code, list := doJSON(t, env.token, http.MethodGet, env.srv.URL+"/v1/workspaces/"+id+"/processes", nil)
 	if code != http.StatusOK {
 		t.Fatalf("list processes: got %d", code)
 	}
@@ -80,14 +82,14 @@ func TestProcessFlow(t *testing.T) {
 		t.Fatalf("exec process: got %v", second)
 	}
 
-	code, raw, hdr := doRaw(t, http.MethodGet, env.srv.URL+"/v1/workspaces/"+id+"/processes/exec-1/logs", nil)
+	code, raw, hdr := doRaw(t, env.token, http.MethodGet, env.srv.URL+"/v1/workspaces/"+id+"/processes/exec-1/logs", nil)
 	if code != http.StatusOK || string(raw) != "hi\n" {
 		t.Fatalf("logs: got %d %q, want 200 hi", code, raw)
 	}
 	if ct := hdr.Get("Content-Type"); ct != "text/plain; charset=utf-8" {
 		t.Fatalf("content type = %q", ct)
 	}
-	code, raw, _ = doRaw(t, http.MethodGet, env.srv.URL+"/v1/workspaces/"+id+"/processes/exec-1/logs?follow=true", nil)
+	code, raw, _ = doRaw(t, env.token, http.MethodGet, env.srv.URL+"/v1/workspaces/"+id+"/processes/exec-1/logs?follow=true", nil)
 	if code != http.StatusOK || string(raw) != "hi\n" {
 		t.Fatalf("logs follow: got %d %q, want 200 hi", code, raw)
 	}
@@ -95,23 +97,23 @@ func TestProcessFlow(t *testing.T) {
 		t.Fatalf("LogCalls = %+v, want follow flags [false true]", env.backend.LogCalls)
 	}
 
-	if code, _ := doJSON(t, http.MethodGet, env.srv.URL+"/v1/workspaces/"+id+"/processes/nope/logs", nil); code != http.StatusNotFound {
+	if code, _ := doJSON(t, env.token, http.MethodGet, env.srv.URL+"/v1/workspaces/"+id+"/processes/nope/logs", nil); code != http.StatusNotFound {
 		t.Fatalf("logs unknown pid: got %d, want 404", code)
 	}
-	if code, _ := doJSON(t, http.MethodGet, env.srv.URL+"/v1/workspaces/nope/processes", nil); code != http.StatusNotFound {
+	if code, _ := doJSON(t, env.token, http.MethodGet, env.srv.URL+"/v1/workspaces/nope/processes", nil); code != http.StatusNotFound {
 		t.Fatalf("list on missing workspace: got %d, want 404", code)
 	}
-	if code, _ := doJSON(t, http.MethodGet, env.srv.URL+"/v1/workspaces/nope/processes/main/logs", nil); code != http.StatusNotFound {
+	if code, _ := doJSON(t, env.token, http.MethodGet, env.srv.URL+"/v1/workspaces/nope/processes/main/logs", nil); code != http.StatusNotFound {
 		t.Fatalf("logs on missing workspace: got %d, want 404", code)
 	}
-	if code, _ := doJSON(t, http.MethodGet, env.srv.URL+"/v1/workspaces/"+id+"/processes/main/logs?follow=bogus", nil); code != http.StatusBadRequest {
+	if code, _ := doJSON(t, env.token, http.MethodGet, env.srv.URL+"/v1/workspaces/"+id+"/processes/main/logs?follow=bogus", nil); code != http.StatusBadRequest {
 		t.Fatalf("logs invalid follow: got %d, want 400", code)
 	}
 }
 
 func TestProcessEmptyWithoutContainer(t *testing.T) {
 	env := newProcsEnv(t)
-	code, created := doJSON(t, http.MethodPost, env.srv.URL+"/v1/workspaces",
+	code, created := doJSON(t, env.token, http.MethodPost, env.srv.URL+"/v1/workspaces",
 		map[string]string{"user_id": "user-1", "name": "dev"})
 	if code != http.StatusCreated {
 		t.Fatalf("create workspace: got %d", code)
@@ -119,14 +121,14 @@ func TestProcessEmptyWithoutContainer(t *testing.T) {
 	id := created["id"].(string)
 
 	// Never started: empty process list, unknown logs.
-	code, list := doJSON(t, http.MethodGet, env.srv.URL+"/v1/workspaces/"+id+"/processes", nil)
+	code, list := doJSON(t, env.token, http.MethodGet, env.srv.URL+"/v1/workspaces/"+id+"/processes", nil)
 	if code != http.StatusOK {
 		t.Fatalf("list processes: got %d", code)
 	}
 	if items, _ := list["processes"].([]any); len(items) != 0 {
 		t.Fatalf("list processes: got %v, want empty", list)
 	}
-	if code, _ := doJSON(t, http.MethodGet, env.srv.URL+"/v1/workspaces/"+id+"/processes/main/logs", nil); code != http.StatusNotFound {
+	if code, _ := doJSON(t, env.token, http.MethodGet, env.srv.URL+"/v1/workspaces/"+id+"/processes/main/logs", nil); code != http.StatusNotFound {
 		t.Fatalf("logs without container: got %d, want 404", code)
 	}
 }
@@ -139,23 +141,24 @@ func TestProcessFollowLive(t *testing.T) {
 		t.Fatalf("NewFileStore: %v", err)
 	}
 	ctrl := controller.NewController(store, container.DefaultBackend(), protocol.NewEventBus())
-	srv := httptest.NewServer(NewServer(ctrl))
+	authSvc, token := newTestAuth(t)
+	srv := httptest.NewServer(NewServer(ctrl, WithAuth(authSvc)))
 	defer srv.Close()
 	ctx := context.Background()
 
-	code, created := doJSON(t, http.MethodPost, srv.URL+"/v1/workspaces",
+	code, created := doJSON(t, token, http.MethodPost, srv.URL+"/v1/workspaces",
 		map[string]string{"user_id": "user-1", "name": "dev"})
 	if code != http.StatusCreated {
 		t.Fatalf("create workspace: got %d", code)
 	}
 	id := created["id"].(string)
-	startWorkspace(t, srv.URL, id)
+	startWorkspace(t, token, srv.URL, id)
 	defer ctrl.Stop(ctx, id)
 
 	if err := ctrl.Exec(ctx, id, container.ExecOptions{Cmd: []string{"echo", "live-ok"}}); err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
-	code, list := doJSON(t, http.MethodGet, srv.URL+"/v1/workspaces/"+id+"/processes", nil)
+	code, list := doJSON(t, token, http.MethodGet, srv.URL+"/v1/workspaces/"+id+"/processes", nil)
 	if code != http.StatusOK {
 		t.Fatalf("list processes: got %d", code)
 	}
@@ -167,7 +170,7 @@ func TestProcessFollowLive(t *testing.T) {
 	if execID == "" {
 		t.Fatalf("exec entry: got %v", items[1])
 	}
-	code, raw, _ := doRaw(t, http.MethodGet, srv.URL+"/v1/workspaces/"+id+"/processes/"+execID+"/logs?follow=true", nil)
+	code, raw, _ := doRaw(t, token, http.MethodGet, srv.URL+"/v1/workspaces/"+id+"/processes/"+execID+"/logs?follow=true", nil)
 	if code != http.StatusOK || string(raw) != "live-ok\n" {
 		t.Fatalf("logs follow: got %d %q, want 200 live-ok", code, raw)
 	}
