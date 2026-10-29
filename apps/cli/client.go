@@ -369,3 +369,50 @@ func (c *Client) RemovePort(workspaceID string, port int) error {
 	return c.do(http.MethodDelete,
 		"/v1/workspaces/"+url.PathEscape(workspaceID)+"/ports/"+strconv.Itoa(port), nil, nil)
 }
+
+// NodeSpec describes a node registration request.
+type NodeSpec struct {
+	Name     string
+	CPU      int
+	MemoryMB int64
+	DiskGB   int64
+	GPUs     int
+	Labels   map[string]string
+}
+
+// RegisterNode registers a compute node.
+func (c *Client) RegisterNode(spec NodeSpec) (types.Node, error) {
+	var n types.Node
+	body := map[string]any{
+		"name": spec.Name, "cpu": spec.CPU,
+		"memory_mb": spec.MemoryMB, "disk_gb": spec.DiskGB, "gpus": spec.GPUs,
+	}
+	if spec.Labels != nil {
+		body["labels"] = spec.Labels
+	}
+	err := c.do(http.MethodPost, "/v1/nodes", body, &n)
+	return n, err
+}
+
+// ListNodes returns every registered node.
+func (c *Client) ListNodes() ([]types.Node, error) {
+	var out struct {
+		Nodes []types.Node `json:"nodes"`
+	}
+	if err := c.do(http.MethodGet, "/v1/nodes", nil, &out); err != nil {
+		return nil, err
+	}
+	return out.Nodes, nil
+}
+
+// GetNode returns one node by id.
+func (c *Client) GetNode(id string) (types.Node, error) {
+	var n types.Node
+	err := c.do(http.MethodGet, "/v1/nodes/"+url.PathEscape(id), nil, &n)
+	return n, err
+}
+
+// DeregisterNode drops a node by id.
+func (c *Client) DeregisterNode(id string) error {
+	return c.do(http.MethodDelete, "/v1/nodes/"+url.PathEscape(id), nil, nil)
+}

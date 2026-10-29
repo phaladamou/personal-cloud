@@ -40,6 +40,10 @@ Commands:
   ports register <id> <port> <target>
   ports list <id>
   ports remove <id> <port>
+  node register <name> --cpu N --mem MB --disk GB [--gpus N] [--label k=v]
+  node list
+  node get <id>
+  node deregister <id>
   exec <id> -- <cmd> [args...]   run a command in a workspace
   help                           show this help
 
@@ -108,6 +112,8 @@ func run(args []string, stdout, stderr io.Writer, stdin io.Reader, getenv func(s
 		err = cmdLogs(client, rest[1:], stdout)
 	case "ports":
 		err = cmdPorts(client, rest[1:], stdout)
+	case "node":
+		err = cmdNode(client, rest[1:], stdout)
 	case "exec":
 		err = cmdExec(client, rest[1:], execCmd, stdout, stderr, stdin)
 	default:
