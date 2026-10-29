@@ -133,14 +133,24 @@ func TestValidateRejects(t *testing.T) {
 		t.Fatalf("Issue: %v", err)
 	}
 
-	// Tamper with the signature (last char still valid base64url).
-	tampered := token[:len(token)-1] + "A"
-	if tampered == token {
-		tampered = token[:len(token)-1] + "B"
-	}
-	// Tamper with the id: flip one char of the middle part.
+	// Tamper with the signature: flip the first char of the signature
+	// part to a different valid char. The first base64 char carries 6
+	// full bits, so the decoded bytes always change. (Flipping the
+	// last char is unsound: with RawURLEncoding the trailing char of
+	// a 32-byte signature only carries 4 significant bits, so some
+	// flips decode to identical bytes and stay valid.)
 	parts := strings.Split(token, ".")
-	idTampered := parts[0] + "." + "A" + parts[1][1:] + "." + parts[2]
+	sigFirst := byte('A')
+	if parts[2][0] == sigFirst {
+		sigFirst = 'B'
+	}
+	tampered := parts[0] + "." + parts[1] + "." + string(sigFirst) + parts[2][1:]
+	// Tamper with the id the same way.
+	idFirst := byte('A')
+	if parts[1][0] == idFirst {
+		idFirst = 'B'
+	}
+	idTampered := parts[0] + "." + string(idFirst) + parts[1][1:] + "." + parts[2]
 
 	for name, bad := range map[string]string{
 		"empty":       "",

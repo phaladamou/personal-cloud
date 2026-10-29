@@ -78,10 +78,18 @@ func TestLoginValidation(t *testing.T) {
 
 func TestAuthRequired(t *testing.T) {
 	env := newTestEnv(t)
-	tampered := env.token[:len(env.token)-1] + "A"
-	if tampered == env.token {
-		tampered = env.token[:len(env.token)-1] + "B"
+	// Tamper with the signature: flip the first char of the signature
+	// part to a different valid char, which always changes the decoded
+	// bytes. (Flipping the last char is unsound: with RawURLEncoding
+	// the trailing char of a 32-byte signature only carries 4
+	// significant bits, so some flips decode identically and the test
+	// flakes ~6% of runs.)
+	parts := strings.Split(env.token, ".")
+	sigFirst := byte('A')
+	if parts[2][0] == sigFirst {
+		sigFirst = 'B'
 	}
+	tampered := parts[0] + "." + parts[1] + "." + string(sigFirst) + parts[2][1:]
 
 	paths := []struct{ method, path string }{
 		{http.MethodGet, "/v1/workspaces"},
