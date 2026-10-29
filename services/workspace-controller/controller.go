@@ -54,6 +54,10 @@ var defaultInitCommand = []string{"sleep", "infinity"}
 // snapshot.created. Without managers they return ErrVolumesUnavailable
 // / ErrSnapshotsUnavailable.
 //
+// Files (see files.go) are optional too: file operations delegate to
+// the configured FilesystemProvider and emit file.changed on every
+// mutation. Without a provider they return ErrFilesystemsUnavailable.
+//
 // A nil bus disables event publishing. Methods are safe for concurrent
 // use.
 type Controller struct {
@@ -63,6 +67,7 @@ type Controller struct {
 	initCmd []string
 	vols    volumes.VolumeManager
 	snaps   snapshots.SnapshotManager
+	fs      FilesystemProvider
 
 	mu         sync.Mutex
 	containers map[string]string
