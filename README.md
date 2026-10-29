@@ -1057,6 +1057,8 @@ Ces choix pourront évoluer avec les besoins réels du système.
 
 > **Phase 1 (Local Computer) en cours** : contrôleur de workspaces, API HTTP + WebSocket, CLI `pc` et terminal web minimal sont implémentés et testés. Voir `docs/architecture/overview.md`.
 
+> **Phase 2 (Persistent Workspace) en cours** : volumes persistants, snapshots à adressage par contenu, API files, processus avec logs et registre de nœuds sont implémentés et testés. Voir `docs/architecture/storage.md`.
+
 Personal Cloud est actuellement au stade de construction de ses primitives fondamentales.
 
 Certaines parties de l'architecture représentent la direction à long terme du projet et ne sont pas encore implémentées.
