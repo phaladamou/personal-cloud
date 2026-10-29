@@ -110,12 +110,64 @@ func (c *Client) Login(device, userID string) (LoginResult, error) {
 	return res, nil
 }
 
+// WorkspaceResources carries optional placement requirements for a
+// workspace. Zero values mean "no requirement".
+type WorkspaceResources struct {
+	CPU      int
+	MemoryMB int64
+	DiskGB   int64
+	GPUs     int
+	Selector map[string]string
+}
+
+// empty reports whether no requirement is set.
+func (r WorkspaceResources) empty() bool {
+	return r.CPU == 0 && r.MemoryMB == 0 && r.DiskGB == 0 && r.GPUs == 0 && len(r.Selector) == 0
+}
+
+// fields encodes the requirements as API body fields, omitting unset
+// values so plain requests keep their historical shape.
+func (r WorkspaceResources) fields() map[string]any {
+	out := map[string]any{}
+	if r.CPU != 0 {
+		out["cpu"] = r.CPU
+	}
+	if r.MemoryMB != 0 {
+		out["memory_mb"] = r.MemoryMB
+	}
+	if r.DiskGB != 0 {
+		out["disk_gb"] = r.DiskGB
+	}
+	if r.GPUs != 0 {
+		out["gpus"] = r.GPUs
+	}
+	if len(r.Selector) > 0 {
+		out["selector"] = r.Selector
+	}
+	return out
+}
+
+// WorkspaceSpec describes a workspace creation request.
+type WorkspaceSpec struct {
+	UserID string
+	Name   string
+	WorkspaceResources
+}
+
+// CreateWorkspaceWithSpec creates a workspace with optional placement
+// requirements.
+func (c *Client) CreateWorkspaceWithSpec(spec WorkspaceSpec) (types.Workspace, error) {
+	var ws types.Workspace
+	body := spec.WorkspaceResources.fields()
+	body["user_id"] = spec.UserID
+	body["name"] = spec.Name
+	err := c.do(http.MethodPost, "/v1/workspaces", body, &ws)
+	return ws, err
+}
+
 // CreateWorkspace creates a workspace for userID with the given name.
 func (c *Client) CreateWorkspace(userID, name string) (types.Workspace, error) {
-	var ws types.Workspace
-	err := c.do(http.MethodPost, "/v1/workspaces",
-		map[string]string{"user_id": userID, "name": name}, &ws)
-	return ws, err
+	return c.CreateWorkspaceWithSpec(WorkspaceSpec{UserID: userID, Name: name})
 }
 
 // ListWorkspaces returns all workspaces.
@@ -141,6 +193,19 @@ func (c *Client) WorkspaceAction(id, action string) (types.Workspace, error) {
 	var ws types.Workspace
 	err := c.do(http.MethodPost,
 		"/v1/workspaces/"+url.PathEscape(id)+"/"+action, nil, &ws)
+	return ws, err
+}
+
+// StartWorkspace starts a workspace, recording res as its placement
+// requirements first when non-empty.
+func (c *Client) StartWorkspace(id string, res WorkspaceResources) (types.Workspace, error) {
+	var ws types.Workspace
+	var body any
+	if !res.empty() {
+		body = res.fields()
+	}
+	err := c.do(http.MethodPost,
+		"/v1/workspaces/"+url.PathEscape(id)+"/start", body, &ws)
 	return ws, err
 }
 

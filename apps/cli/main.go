@@ -20,10 +20,10 @@ const usage = `Usage: pc [--api URL] <command> [args]
 Commands:
   login [device] [--device NAME] [--user ID]
                                  exchange a device token with the server
-  workspace create <name> [--user ID]
+  workspace create <name> [--user ID] [--cpu N] [--mem MB] [--disk GB] [--gpus N] [--selector k=v]
   workspace list
   workspace get <id>
-  workspace start <id>
+  workspace start <id> [--cpu N] [--mem MB] [--disk GB] [--gpus N] [--selector k=v]
   workspace stop <id>
   workspace delete <id>
   snapshot create <id> [--volume ID] [--name NAME]
