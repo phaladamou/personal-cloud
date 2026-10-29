@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
+	"time"
 
 	"github.com/phaladamou/personal-cloud/packages/types"
 )
@@ -79,6 +81,33 @@ func (c *Client) do(method, path string, body, out any) error {
 		}
 	}
 	return nil
+}
+
+// LoginResult is the POST /v1/auth/login answer: the bearer token minted
+// for this device.
+type LoginResult struct {
+	Token     string    `json:"token"`
+	UserID    string    `json:"user_id"`
+	Device    string    `json:"device"`
+	TokenID   string    `json:"token_id"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
+// Login exchanges a device name for a bearer token. An empty userID logs
+// in as the server default owner.
+func (c *Client) Login(device, userID string) (LoginResult, error) {
+	var res LoginResult
+	body := map[string]string{"device": device}
+	if userID != "" {
+		body["user_id"] = userID
+	}
+	if err := c.do(http.MethodPost, "/v1/auth/login", body, &res); err != nil {
+		return LoginResult{}, err
+	}
+	if res.Token == "" {
+		return LoginResult{}, fmt.Errorf("login: server returned no token")
+	}
+	return res, nil
 }
 
 // CreateWorkspace creates a workspace for userID with the given name.
@@ -300,4 +329,43 @@ func (c *Client) ProcessLogs(ctx context.Context, workspaceID, processID string,
 		path += "?follow=true"
 	}
 	return c.doStream(ctx, http.MethodGet, path, w)
+}
+
+// PortForward is one workspace port forward: the gateway serves the
+// workspace service at target (host:port) under
+// /v1/workspaces/{id}/ports/{port}/....
+type PortForward struct {
+	WorkspaceID string `json:"workspace_id"`
+	Port        int    `json:"port"`
+	Target      string `json:"target"`
+	Protocol    string `json:"protocol"`
+}
+
+// RegisterPort exposes the workspace service at target (host:port) on
+// port. An empty protocol registers the server default (tcp).
+func (c *Client) RegisterPort(workspaceID string, port int, target, protocol string) (PortForward, error) {
+	var fwd PortForward
+	body := map[string]any{"port": port, "target": target}
+	if protocol != "" {
+		body["protocol"] = protocol
+	}
+	err := c.do(http.MethodPost, "/v1/workspaces/"+url.PathEscape(workspaceID)+"/ports", body, &fwd)
+	return fwd, err
+}
+
+// ListPorts returns every port forward of the workspace, ordered by port.
+func (c *Client) ListPorts(workspaceID string) ([]PortForward, error) {
+	var out struct {
+		Ports []PortForward `json:"ports"`
+	}
+	if err := c.do(http.MethodGet, "/v1/workspaces/"+url.PathEscape(workspaceID)+"/ports", nil, &out); err != nil {
+		return nil, err
+	}
+	return out.Ports, nil
+}
+
+// RemovePort drops the forward serving port on the workspace.
+func (c *Client) RemovePort(workspaceID string, port int) error {
+	return c.do(http.MethodDelete,
+		"/v1/workspaces/"+url.PathEscape(workspaceID)+"/ports/"+strconv.Itoa(port), nil, nil)
 }

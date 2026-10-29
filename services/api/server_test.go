@@ -25,6 +25,7 @@ import (
 type testEnv struct {
 	srv     *httptest.Server
 	backend *controller.FakeBackend
+	token   string
 }
 
 func newTestEnv(t *testing.T) *testEnv {
@@ -35,13 +36,15 @@ func newTestEnv(t *testing.T) *testEnv {
 	}
 	backend := &controller.FakeBackend{}
 	ctrl := controller.NewController(store, backend, protocol.NewEventBus())
-	srv := httptest.NewServer(NewServer(ctrl))
+	authSvc, token := newTestAuth(t)
+	srv := httptest.NewServer(NewServer(ctrl, WithAuth(authSvc)))
 	t.Cleanup(srv.Close)
-	return &testEnv{srv: srv, backend: backend}
+	return &testEnv{srv: srv, backend: backend, token: token}
 }
 
 // doJSON sends a JSON request and decodes a JSON response body (if any).
-func doJSON(t *testing.T, method, url string, body any) (int, map[string]any) {
+// A non-empty token is sent as a Bearer [REDACTED]
+func doJSON(t *testing.T, token, method, url string, body any) (int, map[string]any) {
 	t.Helper()
 	var rdr io.Reader
 	if body != nil {
@@ -54,6 +57,9 @@ func doJSON(t *testing.T, method, url string, body any) (int, map[string]any) {
 	req, err := http.NewRequest(method, url, rdr)
 	if err != nil {
 		t.Fatalf("new request: %v", err)
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -71,7 +77,7 @@ func doJSON(t *testing.T, method, url string, body any) (int, map[string]any) {
 
 func createWorkspace(t *testing.T, env *testEnv, userID, name string) map[string]any {
 	t.Helper()
-	code, body := doJSON(t, http.MethodPost, env.srv.URL+"/v1/workspaces",
+	code, body := doJSON(t, env.token, http.MethodPost, env.srv.URL+"/v1/workspaces",
 		map[string]string{"user_id": userID, "name": name})
 	if code != http.StatusCreated {
 		t.Fatalf("create: got %d (%v), want 201", code, body)
@@ -81,12 +87,12 @@ func createWorkspace(t *testing.T, env *testEnv, userID, name string) map[string
 
 func action(t *testing.T, env *testEnv, id, op string) (int, map[string]any) {
 	t.Helper()
-	return doJSON(t, http.MethodPost, env.srv.URL+"/v1/workspaces/"+id+"/"+op, nil)
+	return doJSON(t, env.token, http.MethodPost, env.srv.URL+"/v1/workspaces/"+id+"/"+op, nil)
 }
 
 func TestHealthz(t *testing.T) {
 	env := newTestEnv(t)
-	code, body := doJSON(t, http.MethodGet, env.srv.URL+"/healthz", nil)
+	code, body := doJSON(t, env.token, http.MethodGet, env.srv.URL+"/healthz", nil)
 	if code != http.StatusOK || body["status"] != "ok" {
 		t.Fatalf("healthz: got %d %v, want 200 {status:ok}", code, body)
 	}
@@ -100,7 +106,7 @@ func TestCreateValidation(t *testing.T) {
 		"blank user":  map[string]string{"user_id": " ", "name": "n"},
 		"wrong shape": "just a string",
 	} {
-		if code, _ := doJSON(t, http.MethodPost, env.srv.URL+"/v1/workspaces", body); code != http.StatusBadRequest {
+		if code, _ := doJSON(t, env.token, http.MethodPost, env.srv.URL+"/v1/workspaces", body); code != http.StatusBadRequest {
 			t.Fatalf("create %s: got %d, want 400", name, code)
 		}
 	}
@@ -114,15 +120,15 @@ func TestGetAndList(t *testing.T) {
 		t.Fatalf("create status: got %v, want CREATED", created["status"])
 	}
 
-	code, body := doJSON(t, http.MethodGet, env.srv.URL+"/v1/workspaces/"+id, nil)
+	code, body := doJSON(t, env.token, http.MethodGet, env.srv.URL+"/v1/workspaces/"+id, nil)
 	if code != http.StatusOK || body["id"] != id {
 		t.Fatalf("get: got %d %v", code, body)
 	}
-	if code, _ := doJSON(t, http.MethodGet, env.srv.URL+"/v1/workspaces/nope", nil); code != http.StatusNotFound {
+	if code, _ := doJSON(t, env.token, http.MethodGet, env.srv.URL+"/v1/workspaces/nope", nil); code != http.StatusNotFound {
 		t.Fatalf("get missing: got %d, want 404", code)
 	}
 
-	code, body = doJSON(t, http.MethodGet, env.srv.URL+"/v1/workspaces", nil)
+	code, body = doJSON(t, env.token, http.MethodGet, env.srv.URL+"/v1/workspaces", nil)
 	if code != http.StatusOK {
 		t.Fatalf("list: got %d", code)
 	}
@@ -174,6 +180,7 @@ func TestDelete(t *testing.T) {
 		t.Fatalf("start: got %d", code)
 	}
 	req, _ := http.NewRequest(http.MethodDelete, env.srv.URL+"/v1/workspaces/"+id, nil)
+	req.Header.Set("Authorization", "Bearer "+env.token)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("delete: %v", err)
@@ -187,6 +194,7 @@ func TestDelete(t *testing.T) {
 		t.Fatalf("stop: got %d", code)
 	}
 	req, _ = http.NewRequest(http.MethodDelete, env.srv.URL+"/v1/workspaces/"+id, nil)
+	req.Header.Set("Authorization", "Bearer "+env.token)
 	resp, err = http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("delete: %v", err)
@@ -195,7 +203,7 @@ func TestDelete(t *testing.T) {
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("delete STOPPED: got %d, want 204", resp.StatusCode)
 	}
-	if code, _ := doJSON(t, http.MethodGet, env.srv.URL+"/v1/workspaces/"+id, nil); code != http.StatusNotFound {
+	if code, _ := doJSON(t, env.token, http.MethodGet, env.srv.URL+"/v1/workspaces/"+id, nil); code != http.StatusNotFound {
 		t.Fatalf("get after delete: got %d, want 404", code)
 	}
 }
@@ -207,7 +215,7 @@ type wsClient struct {
 	r    *bufio.Reader
 }
 
-func dialExec(t *testing.T, baseURL, path string) *wsClient {
+func dialExec(t *testing.T, token, baseURL, path string) *wsClient {
 	t.Helper()
 	addr := strings.TrimPrefix(baseURL, "http://")
 	conn, err := net.Dial("tcp", addr)
@@ -222,6 +230,7 @@ func dialExec(t *testing.T, baseURL, path string) *wsClient {
 		"Connection: Upgrade\r\n" +
 		"Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n" +
 		"Sec-WebSocket-Version: 13\r\n" +
+		"Authorization: Bearer " + token + "\r\n" +
 		"\r\n"
 	if _, err := io.WriteString(conn, req); err != nil {
 		t.Fatalf("write handshake: %v", err)
@@ -305,7 +314,7 @@ func TestIntegration_FullFlow(t *testing.T) {
 		t.Fatalf("start: got %d %v", code, body)
 	}
 
-	cli := dialExec(t, env.srv.URL, "/v1/workspaces/"+id+"/exec?argv=cat")
+	cli := dialExec(t, env.token, env.srv.URL, "/v1/workspaces/"+id+"/exec?argv=cat")
 	cli.send(t, ws.OpText, []byte("ping"))
 	op, payload := cli.recv(t)
 	if op != ws.OpBinary || string(payload) != "got:ping" {
@@ -322,6 +331,7 @@ func TestIntegration_FullFlow(t *testing.T) {
 		t.Fatalf("stop: got %d %v", code, body)
 	}
 	req, _ := http.NewRequest(http.MethodDelete, env.srv.URL+"/v1/workspaces/"+id, nil)
+	req.Header.Set("Authorization", "Bearer "+env.token)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("delete: %v", err)
@@ -330,7 +340,7 @@ func TestIntegration_FullFlow(t *testing.T) {
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("delete: got %d, want 204", resp.StatusCode)
 	}
-	if code, _ := doJSON(t, http.MethodGet, env.srv.URL+"/v1/workspaces/"+id, nil); code != http.StatusNotFound {
+	if code, _ := doJSON(t, env.token, http.MethodGet, env.srv.URL+"/v1/workspaces/"+id, nil); code != http.StatusNotFound {
 		t.Fatalf("get after delete: got %d, want 404", code)
 	}
 }
@@ -339,35 +349,20 @@ func TestExecErrors(t *testing.T) {
 	env := newTestEnv(t)
 	id := createWorkspace(t, env, "user-1", "dev")["id"].(string)
 
-	// Missing argv.
-	resp, err := http.Get(env.srv.URL + "/v1/workspaces/" + id + "/exec")
-	if err != nil {
-		t.Fatalf("exec without argv: %v", err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("exec without argv: got %d, want 400", resp.StatusCode)
+	// Missing argv (plain GET, no upgrade headers: the 400 wins before
+	// the handshake is attempted).
+	if code, _ := doJSON(t, env.token, http.MethodGet, env.srv.URL+"/v1/workspaces/"+id+"/exec", nil); code != http.StatusBadRequest {
+		t.Fatalf("exec without argv: got %d, want 400", code)
 	}
 
-	// Unknown workspace (plain GET, no upgrade headers: the 404 wins
-	// before the handshake is attempted).
-	resp, err = http.Get(env.srv.URL + "/v1/workspaces/nope/exec?argv=cat")
-	if err != nil {
-		t.Fatalf("exec missing: %v", err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("exec missing: got %d, want 404", resp.StatusCode)
+	// Unknown workspace.
+	if code, _ := doJSON(t, env.token, http.MethodGet, env.srv.URL+"/v1/workspaces/nope/exec?argv=cat", nil); code != http.StatusNotFound {
+		t.Fatalf("exec missing: got %d, want 404", code)
 	}
 
 	// Not running.
-	resp, err = http.Get(env.srv.URL + "/v1/workspaces/" + id + "/exec?argv=cat")
-	if err != nil {
-		t.Fatalf("exec created: %v", err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusConflict {
-		t.Fatalf("exec on CREATED: got %d, want 409", resp.StatusCode)
+	if code, _ := doJSON(t, env.token, http.MethodGet, env.srv.URL+"/v1/workspaces/"+id+"/exec?argv=cat", nil); code != http.StatusConflict {
+		t.Fatalf("exec on CREATED: got %d, want 409", code)
 	}
 }
 
@@ -381,7 +376,7 @@ func TestExecFailureSendsErrorMessage(t *testing.T) {
 		t.Fatalf("start: got %d", code)
 	}
 
-	cli := dialExec(t, env.srv.URL, "/v1/workspaces/"+id+"/exec?argv=false")
+	cli := dialExec(t, env.token, env.srv.URL, "/v1/workspaces/"+id+"/exec?argv=false")
 	op, payload := cli.recv(t)
 	if op != ws.OpText || !strings.HasPrefix(string(payload), "error: ") {
 		t.Fatalf("exec failure: got op=%d %q, want error text", op, payload)

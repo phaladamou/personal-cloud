@@ -18,6 +18,7 @@ import (
 	"github.com/phaladamou/personal-cloud/packages/protocol"
 	"github.com/phaladamou/personal-cloud/runtime/container"
 	"github.com/phaladamou/personal-cloud/services/api"
+	"github.com/phaladamou/personal-cloud/services/auth"
 	controller "github.com/phaladamou/personal-cloud/services/workspace-controller"
 )
 
@@ -313,16 +314,29 @@ func TestExecAgainstStage3Server(t *testing.T) {
 		},
 	}
 	ctrl := controller.NewController(store, backend, protocol.NewEventBus())
-	srv := httptest.NewServer(api.NewServer(ctrl))
+	authSvc, err := auth.NewService(auth.NewFakeStore(), []byte("wsclient-test-secret-0123456789-0"))
+	if err != nil {
+		t.Fatalf("NewService auth: %v", err)
+	}
+	srv := httptest.NewServer(api.NewServer(ctrl, api.WithAuth(authSvc)))
 	defer srv.Close()
 
+	token := ""
 	post := func(path string, body any) (int, map[string]any) {
 		var rdr io.Reader
 		if body != nil {
 			raw, _ := json.Marshal(body)
 			rdr = bytes.NewReader(raw)
 		}
-		resp, err := http.Post(srv.URL+path, "application/json", rdr)
+		req, err := http.NewRequest(http.MethodPost, srv.URL+path, rdr)
+		if err != nil {
+			t.Fatalf("POST %s: %v", path, err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			t.Fatalf("POST %s: %v", path, err)
 		}
@@ -330,6 +344,11 @@ func TestExecAgainstStage3Server(t *testing.T) {
 		var out map[string]any
 		_ = json.NewDecoder(resp.Body).Decode(&out)
 		return resp.StatusCode, out
+	}
+	if code, body := post("/v1/auth/login", map[string]string{"device": "wsclient-test"}); code != http.StatusCreated {
+		t.Fatalf("login: got %d (%v), want 201", code, body)
+	} else {
+		token, _ = body["token"].(string)
 	}
 	code, created := post("/v1/workspaces", map[string]string{"user_id": "u", "name": "dev"})
 	if code != http.StatusCreated {
@@ -342,7 +361,7 @@ func TestExecAgainstStage3Server(t *testing.T) {
 
 	wsURL := "ws://" + strings.TrimPrefix(srv.URL, "http://") +
 		"/v1/workspaces/" + id + "/exec?argv=cat"
-	c, err := Dial(wsURL, nil)
+	c, err := Dial(wsURL, http.Header{"Authorization": {"Bearer " + token}})
 	if err != nil {
 		t.Fatalf("Dial exec: %v", err)
 	}

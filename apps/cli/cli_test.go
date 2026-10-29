@@ -10,11 +10,15 @@ import (
 
 	"github.com/phaladamou/personal-cloud/packages/protocol"
 	"github.com/phaladamou/personal-cloud/services/api"
+	"github.com/phaladamou/personal-cloud/services/auth"
+	"github.com/phaladamou/personal-cloud/services/gateway"
 	controller "github.com/phaladamou/personal-cloud/services/workspace-controller"
 )
 
-// cliEnv wires the CLI test harness: a real API over a temp store and
-// fake runtime, with PC_CONFIG_DIR and PC_API pointed at temp values.
+// cliEnv wires the CLI test harness: a real API behind the gateway
+// over a temp store and fake runtime, with PC_CONFIG_DIR and PC_API
+// pointed at temp values. Every CLI flow runs through the gateway,
+// like production traffic.
 type cliEnv struct {
 	getenv func(string) string
 	vars   map[string]string
@@ -28,7 +32,9 @@ func newCLIEnv(t *testing.T) (*httptest.Server, *controller.FakeBackend, *cliEnv
 	}
 	backend := &controller.FakeBackend{}
 	ctrl := controller.NewController(store, backend, protocol.NewEventBus())
-	srv := httptest.NewServer(api.NewServer(ctrl))
+	authSvc := newCLIAuth(t)
+	gw := gateway.New(gateway.NewRegistry(), api.NewServer(ctrl, api.WithAuth(authSvc)), gateway.WithAuth(authSvc))
+	srv := httptest.NewServer(gw)
 	t.Cleanup(srv.Close)
 	env := &cliEnv{vars: map[string]string{
 		"PC_CONFIG_DIR": t.TempDir(),
@@ -38,6 +44,25 @@ func newCLIEnv(t *testing.T) (*httptest.Server, *controller.FakeBackend, *cliEnv
 	return srv, backend, env
 }
 
+// newCLIAuth builds the auth service guarding CLI test servers.
+func newCLIAuth(t *testing.T) *auth.Service {
+	t.Helper()
+	svc, err := auth.NewService(auth.NewFakeStore(), []byte("cli-test-secret-0123456789-0123"))
+	if err != nil {
+		t.Fatalf("NewService auth: %v", err)
+	}
+	return svc
+}
+
+// mustLogin runs "pc login" and fails the test when it does not exit 0.
+func mustLogin(t *testing.T, getenv func(string) string, args ...string) {
+	t.Helper()
+	full := append([]string{"login"}, args...)
+	if code, _, stderr := runCLI(full, "", getenv); code != 0 {
+		t.Fatalf("%v: exit %d, stderr %q", full, code, stderr)
+	}
+}
+
 // runCLI drives run() with a string stdin and captures both outputs.
 func runCLI(args []string, stdin string, getenv func(string) string) (int, string, string) {
 	var stdout, stderr bytes.Buffer
@@ -45,9 +70,9 @@ func runCLI(args []string, stdin string, getenv func(string) string) (int, strin
 	return code, stdout.String(), stderr.String()
 }
 
-func TestLoginDefaultToken(t *testing.T) {
+func TestLoginExchangesToken(t *testing.T) {
 	_, _, env := newCLIEnv(t)
-	code, stdout, stderr := runCLI([]string{"login"}, "", env.getenv)
+	code, stdout, stderr := runCLI([]string{"login", "laptop"}, "", env.getenv)
 	if code != 0 {
 		t.Fatalf("login: exit %d, stderr %q", code, stderr)
 	}
@@ -55,33 +80,78 @@ func TestLoginDefaultToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read token: %v", err)
 	}
-	if strings.TrimSpace(string(raw)) != defaultToken {
-		t.Fatalf("token file: got %q, want %q", strings.TrimSpace(string(raw)), defaultToken)
+	saved := strings.TrimSpace(string(raw))
+	if !strings.HasPrefix(saved, "pc1.") {
+		t.Fatalf("token file: got %q, want a server-issued token", saved)
 	}
-	if !strings.Contains(stdout, "token saved to") {
+	if !strings.Contains(stdout, "token saved to") || !strings.Contains(stdout, "laptop") {
 		t.Fatalf("login output: got %q", stdout)
+	}
+	// The saved token authenticates later calls.
+	if code, _, stderr := runCLI([]string{"workspace", "list"}, "", env.getenv); code != 0 {
+		t.Fatalf("list after login: exit %d, stderr %q", code, stderr)
 	}
 }
 
-func TestLoginCustomToken(t *testing.T) {
+func TestLoginDeviceForms(t *testing.T) {
 	_, _, env := newCLIEnv(t)
 	for _, args := range [][]string{
-		{"login", "--token", "abc123"},
-		{"login", "--token=xyz"},
-		{"login", "positional-token"},
+		{"login"}, // Default device (hostname or "cli").
+		{"login", "--device", "phone"},
+		{"login", "--device=tablet"},
+		{"login", "laptop"},
+		{"login", "laptop", "--user", "user-9"},
+		{"login", "--user=user-9", "laptop"},
 	} {
-		if code, _, stderr := runCLI(args, "", env.getenv); code != 0 {
+		if code, stdout, stderr := runCLI(args, "", env.getenv); code != 0 {
 			t.Fatalf("%v: exit %d, stderr %q", args, code, stderr)
+		} else if !strings.Contains(stdout, "logged in") {
+			t.Fatalf("%v: output %q lacks confirmation", args, stdout)
 		}
 	}
 	raw, _ := os.ReadFile(filepath.Join(env.vars["PC_CONFIG_DIR"], "token"))
-	if strings.TrimSpace(string(raw)) != "positional-token" {
+	if !strings.HasPrefix(strings.TrimSpace(string(raw)), "pc1.") {
 		t.Fatalf("token file: got %q", strings.TrimSpace(string(raw)))
+	}
+}
+
+func TestNotLoggedInHint(t *testing.T) {
+	_, _, env := newCLIEnv(t)
+
+	// No token file: every server call points at login.
+	code, _, stderr := runCLI([]string{"workspace", "list"}, "", env.getenv)
+	if code == 0 {
+		t.Fatal("list without login: exit 0, want nonzero")
+	}
+	if !strings.Contains(stderr, `run "pc login"`) {
+		t.Fatalf("stderr: got %q, want a login hint", stderr)
+	}
+
+	// A bogus token earns the same hint, not a raw 401.
+	if err := saveToken(env.getenv, "bogus-token"); err != nil {
+		t.Fatalf("save bogus token: %v", err)
+	}
+	code, _, stderr = runCLI([]string{"workspace", "list"}, "", env.getenv)
+	if code == 0 {
+		t.Fatal("list with bogus token: exit 0, want nonzero")
+	}
+	if !strings.Contains(stderr, `run "pc login"`) {
+		t.Fatalf("stderr: got %q, want a login hint", stderr)
+	}
+
+	// Exec over WebSocket maps its 401 handshake to the same hint.
+	code, _, stderr = runCLI([]string{"exec", "nope", "--", "cat"}, "", env.getenv)
+	if code == 0 {
+		t.Fatal("exec with bogus token: exit 0, want nonzero")
+	}
+	if !strings.Contains(stderr, `run "pc login"`) {
+		t.Fatalf("exec stderr: got %q, want a login hint", stderr)
 	}
 }
 
 func TestWorkspaceRoundTrip(t *testing.T) {
 	_, _, env := newCLIEnv(t)
+	mustLogin(t, env.getenv)
 
 	code, out, stderr := runCLI([]string{"workspace", "create", "dev"}, "", env.getenv)
 	if code != 0 {
@@ -124,6 +194,7 @@ func TestWorkspaceRoundTrip(t *testing.T) {
 
 func TestWorkspaceCreateCustomUser(t *testing.T) {
 	_, _, env := newCLIEnv(t)
+	mustLogin(t, env.getenv)
 	code, _, stderr := runCLI([]string{"workspace", "create", "dev", "--user", "u-7"}, "", env.getenv)
 	if code != 0 {
 		t.Fatalf("create --user: exit %d, stderr %q", code, stderr)
@@ -132,6 +203,7 @@ func TestWorkspaceCreateCustomUser(t *testing.T) {
 
 func TestUsageAndArgErrors(t *testing.T) {
 	_, _, env := newCLIEnv(t)
+	mustLogin(t, env.getenv) // Server-touching cases must fail for their own reason, not 401.
 
 	code, out, _ := runCLI([]string{"help"}, "", env.getenv)
 	if code != 0 || !strings.Contains(out, "Usage:") {
@@ -153,6 +225,7 @@ func TestUsageAndArgErrors(t *testing.T) {
 		{"workspace", "delete", "no-such-id"},
 		{"login", "--bogus"},
 		{"login", "a", "b"},
+		{"login", "a", "--device", "b"},
 	} {
 		if code, _, stderr := runCLI(args, "", env.getenv); code == 0 {
 			t.Fatalf("%v: exit 0, want nonzero", args)
@@ -175,14 +248,20 @@ func TestAPIFlagOverridesEnv(t *testing.T) {
 }
 
 func TestTokenSentAsBearer(t *testing.T) {
-	srv, _, env := newCLIEnv(t)
-	_ = srv
-	if code, _, stderr := runCLI([]string{"login", "--token", "t-1"}, "", env.getenv); code != 0 {
-		t.Fatalf("login: exit %d, stderr %q", code, stderr)
-	}
-	// A subsequent call must still succeed with the token file present
-	// (the Phase-1 API ignores auth, but the header must not break it).
+	_, _, env := newCLIEnv(t)
+	mustLogin(t, env.getenv, "laptop")
+	// The login token authenticates later calls as a Bearer [REDACTED]
+	// and relogging from another device mints an independent token.
 	if code, _, stderr := runCLI([]string{"workspace", "list"}, "", env.getenv); code != 0 {
 		t.Fatalf("list with token: exit %d, stderr %q", code, stderr)
+	}
+	first, _ := os.ReadFile(filepath.Join(env.vars["PC_CONFIG_DIR"], "token"))
+	mustLogin(t, env.getenv, "phone")
+	second, _ := os.ReadFile(filepath.Join(env.vars["PC_CONFIG_DIR"], "token"))
+	if string(first) == string(second) {
+		t.Fatal("two device logins saved the same token")
+	}
+	if code, _, stderr := runCLI([]string{"workspace", "list"}, "", env.getenv); code != 0 {
+		t.Fatalf("list with second token: exit %d, stderr %q", code, stderr)
 	}
 }

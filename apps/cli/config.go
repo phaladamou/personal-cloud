@@ -10,9 +10,6 @@ import (
 // defaultAPI is the API base URL when neither --api nor PC_API is set.
 const defaultAPI = "http://localhost:8080"
 
-// defaultToken is the stub token stored by "pc login" without arguments.
-const defaultToken = "dev-token"
-
 // configDir returns the pc config directory: PC_CONFIG_DIR when set
 // (used by tests), otherwise ~/.pc.
 func configDir(getenv func(string) string) string {

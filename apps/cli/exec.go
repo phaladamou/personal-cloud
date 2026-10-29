@@ -35,6 +35,9 @@ func cmdExec(c *Client, args, cmd []string, stdout, stderr io.Writer, stdin io.R
 	}
 	conn, err := wsclient.Dial(wsURL, headers)
 	if err != nil {
+		if isAuthFailure(err) {
+			return &apiError{Status: http.StatusUnauthorized, Message: "authentication required"}
+		}
 		return err
 	}
 	defer conn.Close()
@@ -96,6 +99,12 @@ func cmdExec(c *Client, args, cmd []string, stdout, stderr io.Writer, stdin io.R
 		return fmt.Errorf("exec: command failed")
 	}
 	return nil
+}
+
+// isAuthFailure reports a WebSocket handshake rejected with 401
+// Unauthorized, so exec surfaces the same login hint as the REST calls.
+func isAuthFailure(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "401 Unauthorized")
 }
 
 // execURL builds the WebSocket URL for the exec endpoint, mapping the

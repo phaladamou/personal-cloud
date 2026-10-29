@@ -6,8 +6,10 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"strings"
 )
@@ -16,7 +18,8 @@ import (
 const usage = `Usage: pc [--api URL] <command> [args]
 
 Commands:
-  login [--token TOKEN]          save an auth token (Phase 1 stub)
+  login [device] [--device NAME] [--user ID]
+                                 exchange a device token with the server
   workspace create <name> [--user ID]
   workspace list
   workspace get <id>
@@ -34,6 +37,9 @@ Commands:
   files rm <id> <path>
   ps <id>                        list workspace processes
   logs <id> <pid> [--follow]     stream process logs
+  ports register <id> <port> <target>
+  ports list <id>
+  ports remove <id> <port>
   exec <id> -- <cmd> [args...]   run a command in a workspace
   help                           show this help
 
@@ -89,7 +95,7 @@ func run(args []string, stdout, stderr io.Writer, stdin io.Reader, getenv func(s
 	var err error
 	switch rest[0] {
 	case "login":
-		err = cmdLogin(rest[1:], stdout, getenv)
+		err = cmdLogin(client, rest[1:], stdout, getenv)
 	case "workspace":
 		err = cmdWorkspace(client, rest[1:], stdout)
 	case "snapshot":
@@ -100,16 +106,28 @@ func run(args []string, stdout, stderr io.Writer, stdin io.Reader, getenv func(s
 		err = cmdPs(client, rest[1:], stdout)
 	case "logs":
 		err = cmdLogs(client, rest[1:], stdout)
+	case "ports":
+		err = cmdPorts(client, rest[1:], stdout)
 	case "exec":
 		err = cmdExec(client, rest[1:], execCmd, stdout, stderr, stdin)
 	default:
 		err = fmt.Errorf("unknown command %q (run \"pc help\")", rest[0])
 	}
 	if err != nil {
-		fmt.Fprintf(stderr, "pc: %v\n", err)
+		fmt.Fprintf(stderr, "pc: %v\n", friendlyError(err))
 		return 1
 	}
 	return 0
+}
+
+// friendlyError translates a 401 from the API into a login hint; every
+// other error passes through unchanged.
+func friendlyError(err error) error {
+	var apiErr *apiError
+	if errors.As(err, &apiErr) && apiErr.Status == http.StatusUnauthorized {
+		return errors.New(`authentication required (run "pc login")`)
+	}
+	return err
 }
 
 func indexOf(args []string, want string) int {

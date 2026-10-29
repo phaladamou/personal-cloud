@@ -26,7 +26,7 @@ func newFilesCLIEnv(t *testing.T) *filesCLIEnv {
 	}
 	ctrl := controller.NewController(store, &controller.FakeBackend{}, protocol.NewEventBus(),
 		controller.WithFilesystems(controller.DirFSProvider{Root: t.TempDir()}))
-	srv := httptest.NewServer(api.NewServer(ctrl))
+	srv := httptest.NewServer(api.NewServer(ctrl, api.WithAuth(newCLIAuth(t))))
 	t.Cleanup(srv.Close)
 	env := &cliEnv{vars: map[string]string{
 		"PC_CONFIG_DIR": t.TempDir(),
@@ -38,6 +38,7 @@ func newFilesCLIEnv(t *testing.T) *filesCLIEnv {
 
 func TestFilesRoundTrip(t *testing.T) {
 	env := newFilesCLIEnv(t)
+	mustLogin(t, env.env.getenv)
 
 	code, out, stderr := runCLI([]string{"workspace", "create", "dev"}, "", env.env.getenv)
 	if code != 0 {
@@ -121,6 +122,7 @@ func TestFilesUsageErrors(t *testing.T) {
 
 func TestFilesMissingWorkspace(t *testing.T) {
 	env := newFilesCLIEnv(t)
+	mustLogin(t, env.env.getenv)
 
 	if code, _, _ := runCLI([]string{"files", "ls", "nope"}, "", env.env.getenv); code == 0 {
 		t.Fatal("files ls on missing workspace: got exit 0, want failure")

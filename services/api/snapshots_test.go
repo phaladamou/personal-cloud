@@ -20,6 +20,7 @@ type storageEnv struct {
 	ctrl  *controller.Controller
 	vols  *volumes.LocalManager
 	snaps *snapshots.LocalManager
+	token string
 }
 
 func newStorageEnv(t *testing.T) *storageEnv {
@@ -38,22 +39,23 @@ func newStorageEnv(t *testing.T) *storageEnv {
 	}
 	ctrl := controller.NewController(store, &controller.FakeBackend{}, protocol.NewEventBus(),
 		controller.WithVolumes(vols), controller.WithSnapshots(snaps))
-	srv := httptest.NewServer(NewServer(ctrl))
+	authSvc, token := newTestAuth(t)
+	srv := httptest.NewServer(NewServer(ctrl, WithAuth(authSvc)))
 	t.Cleanup(srv.Close)
-	return &storageEnv{srv: srv, ctrl: ctrl, vols: vols, snaps: snaps}
+	return &storageEnv{srv: srv, ctrl: ctrl, vols: vols, snaps: snaps, token: token}
 }
 
 // createSnapshot posts a snapshot and returns the decoded body.
 func createSnapshot(t *testing.T, env *storageEnv, id string, body any) (int, map[string]any) {
 	t.Helper()
-	return doJSON(t, http.MethodPost, env.srv.URL+"/v1/workspaces/"+id+"/snapshots", body)
+	return doJSON(t, env.token, http.MethodPost, env.srv.URL+"/v1/workspaces/"+id+"/snapshots", body)
 }
 
 func TestSnapshotFlow(t *testing.T) {
 	ctx := context.Background()
 	env := newStorageEnv(t)
 
-	code, body := doJSON(t, http.MethodPost, env.srv.URL+"/v1/workspaces",
+	code, body := doJSON(t, env.token, http.MethodPost, env.srv.URL+"/v1/workspaces",
 		map[string]string{"user_id": "user-1", "name": "dev"})
 	if code != http.StatusCreated {
 		t.Fatalf("create workspace: got %d (%v), want 201", code, body)
@@ -91,7 +93,7 @@ func TestSnapshotFlow(t *testing.T) {
 	}
 
 	// List shows the snapshot; get returns it.
-	code, list := doJSON(t, http.MethodGet, env.srv.URL+"/v1/workspaces/"+id+"/snapshots", nil)
+	code, list := doJSON(t, env.token, http.MethodGet, env.srv.URL+"/v1/workspaces/"+id+"/snapshots", nil)
 	if code != http.StatusOK {
 		t.Fatalf("list snapshots: got %d", code)
 	}
@@ -99,7 +101,7 @@ func TestSnapshotFlow(t *testing.T) {
 	if len(items) != 1 {
 		t.Fatalf("list snapshots: got %v, want 1 snapshot", list)
 	}
-	code, single := doJSON(t, http.MethodGet, env.srv.URL+"/v1/workspaces/"+id+"/snapshots/"+sid, nil)
+	code, single := doJSON(t, env.token, http.MethodGet, env.srv.URL+"/v1/workspaces/"+id+"/snapshots/"+sid, nil)
 	if code != http.StatusOK || single["id"] != sid {
 		t.Fatalf("get snapshot: got %d %v", code, single)
 	}
@@ -108,7 +110,7 @@ func TestSnapshotFlow(t *testing.T) {
 	if err := os.Remove(dataPath); err != nil {
 		t.Fatalf("remove file: %v", err)
 	}
-	code, restored := doJSON(t, http.MethodPost, env.srv.URL+"/v1/workspaces/"+id+"/snapshots/"+sid+"/restore", nil)
+	code, restored := doJSON(t, env.token, http.MethodPost, env.srv.URL+"/v1/workspaces/"+id+"/snapshots/"+sid+"/restore", nil)
 	if code != http.StatusOK || restored["id"] != sid {
 		t.Fatalf("restore snapshot: got %d %v", code, restored)
 	}
@@ -119,6 +121,7 @@ func TestSnapshotFlow(t *testing.T) {
 
 	// Delete the snapshot.
 	req, _ := http.NewRequest(http.MethodDelete, env.srv.URL+"/v1/workspaces/"+id+"/snapshots/"+sid, nil)
+	req.Header.Set("Authorization", "Bearer "+env.token)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("delete snapshot: %v", err)
@@ -127,7 +130,7 @@ func TestSnapshotFlow(t *testing.T) {
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("delete snapshot: got %d, want 204", resp.StatusCode)
 	}
-	code, list = doJSON(t, http.MethodGet, env.srv.URL+"/v1/workspaces/"+id+"/snapshots", nil)
+	code, list = doJSON(t, env.token, http.MethodGet, env.srv.URL+"/v1/workspaces/"+id+"/snapshots", nil)
 	if code != http.StatusOK {
 		t.Fatalf("list after delete: got %d", code)
 	}
@@ -143,16 +146,17 @@ func TestSnapshotErrors(t *testing.T) {
 	if code, _ := createSnapshot(t, env, "nope", nil); code != http.StatusNotFound {
 		t.Fatalf("create on missing workspace: got %d, want 404", code)
 	}
-	if code, _ := doJSON(t, http.MethodGet, env.srv.URL+"/v1/workspaces/nope/snapshots", nil); code != http.StatusNotFound {
+	if code, _ := doJSON(t, env.token, http.MethodGet, env.srv.URL+"/v1/workspaces/nope/snapshots", nil); code != http.StatusNotFound {
 		t.Fatalf("list on missing workspace: got %d, want 404", code)
 	}
-	if code, _ := doJSON(t, http.MethodGet, env.srv.URL+"/v1/workspaces/nope/snapshots/s", nil); code != http.StatusNotFound {
+	if code, _ := doJSON(t, env.token, http.MethodGet, env.srv.URL+"/v1/workspaces/nope/snapshots/s", nil); code != http.StatusNotFound {
 		t.Fatalf("get on missing workspace: got %d, want 404", code)
 	}
-	if code, _ := doJSON(t, http.MethodPost, env.srv.URL+"/v1/workspaces/nope/snapshots/s/restore", nil); code != http.StatusNotFound {
+	if code, _ := doJSON(t, env.token, http.MethodPost, env.srv.URL+"/v1/workspaces/nope/snapshots/s/restore", nil); code != http.StatusNotFound {
 		t.Fatalf("restore on missing workspace: got %d, want 404", code)
 	}
 	req, _ := http.NewRequest(http.MethodDelete, env.srv.URL+"/v1/workspaces/nope/snapshots/s", nil)
+	req.Header.Set("Authorization", "Bearer "+env.token)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("delete on missing workspace: %v", err)
@@ -163,19 +167,20 @@ func TestSnapshotErrors(t *testing.T) {
 	}
 
 	// Unknown snapshot on a real workspace.
-	code, created := doJSON(t, http.MethodPost, env.srv.URL+"/v1/workspaces",
+	code, created := doJSON(t, env.token, http.MethodPost, env.srv.URL+"/v1/workspaces",
 		map[string]string{"user_id": "user-1", "name": "dev"})
 	if code != http.StatusCreated {
 		t.Fatalf("create workspace: got %d (%v), want 201", code, created)
 	}
 	id := created["id"].(string)
-	if code, _ := doJSON(t, http.MethodGet, env.srv.URL+"/v1/workspaces/"+id+"/snapshots/nope", nil); code != http.StatusNotFound {
+	if code, _ := doJSON(t, env.token, http.MethodGet, env.srv.URL+"/v1/workspaces/"+id+"/snapshots/nope", nil); code != http.StatusNotFound {
 		t.Fatalf("get missing snapshot: got %d, want 404", code)
 	}
-	if code, _ := doJSON(t, http.MethodPost, env.srv.URL+"/v1/workspaces/"+id+"/snapshots/nope/restore", nil); code != http.StatusNotFound {
+	if code, _ := doJSON(t, env.token, http.MethodPost, env.srv.URL+"/v1/workspaces/"+id+"/snapshots/nope/restore", nil); code != http.StatusNotFound {
 		t.Fatalf("restore missing snapshot: got %d, want 404", code)
 	}
 	req, _ = http.NewRequest(http.MethodDelete, env.srv.URL+"/v1/workspaces/"+id+"/snapshots/nope", nil)
+	req.Header.Set("Authorization", "Bearer "+env.token)
 	resp, err = http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("delete missing snapshot: %v", err)
@@ -191,7 +196,7 @@ func TestSnapshotErrors(t *testing.T) {
 	}
 
 	// Invalid JSON body.
-	if code, _ := doJSON(t, http.MethodPost, env.srv.URL+"/v1/workspaces/"+id+"/snapshots", "just a string"); code != http.StatusBadRequest {
+	if code, _ := doJSON(t, env.token, http.MethodPost, env.srv.URL+"/v1/workspaces/"+id+"/snapshots", "just a string"); code != http.StatusBadRequest {
 		t.Fatalf("create invalid body: got %d, want 400", code)
 	}
 }
@@ -200,19 +205,20 @@ func TestSnapshotsUnavailable(t *testing.T) {
 	env := newTestEnv(t) // No storage managers.
 	id := createWorkspace(t, env, "user-1", "dev")["id"].(string)
 
-	if code, _ := doJSON(t, http.MethodPost, env.srv.URL+"/v1/workspaces/"+id+"/snapshots", nil); code != http.StatusNotImplemented {
+	if code, _ := doJSON(t, env.token, http.MethodPost, env.srv.URL+"/v1/workspaces/"+id+"/snapshots", nil); code != http.StatusNotImplemented {
 		t.Fatalf("create without storage: got %d, want 501", code)
 	}
-	if code, _ := doJSON(t, http.MethodGet, env.srv.URL+"/v1/workspaces/"+id+"/snapshots", nil); code != http.StatusNotImplemented {
+	if code, _ := doJSON(t, env.token, http.MethodGet, env.srv.URL+"/v1/workspaces/"+id+"/snapshots", nil); code != http.StatusNotImplemented {
 		t.Fatalf("list without storage: got %d, want 501", code)
 	}
-	if code, _ := doJSON(t, http.MethodGet, env.srv.URL+"/v1/workspaces/"+id+"/snapshots/s", nil); code != http.StatusNotImplemented {
+	if code, _ := doJSON(t, env.token, http.MethodGet, env.srv.URL+"/v1/workspaces/"+id+"/snapshots/s", nil); code != http.StatusNotImplemented {
 		t.Fatalf("get without storage: got %d, want 501", code)
 	}
-	if code, _ := doJSON(t, http.MethodPost, env.srv.URL+"/v1/workspaces/"+id+"/snapshots/s/restore", nil); code != http.StatusNotImplemented {
+	if code, _ := doJSON(t, env.token, http.MethodPost, env.srv.URL+"/v1/workspaces/"+id+"/snapshots/s/restore", nil); code != http.StatusNotImplemented {
 		t.Fatalf("restore without storage: got %d, want 501", code)
 	}
 	req, _ := http.NewRequest(http.MethodDelete, env.srv.URL+"/v1/workspaces/"+id+"/snapshots/s", nil)
+	req.Header.Set("Authorization", "Bearer "+env.token)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("delete without storage: %v", err)
