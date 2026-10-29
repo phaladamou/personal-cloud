@@ -42,7 +42,32 @@ type Node struct {
 	DiskGB    int64             `json:"disk_gb"`
 	GPUs      int               `json:"gpus"`
 	Labels    map[string]string `json:"labels,omitempty"`
-	CreatedAt time.Time         `json:"created_at"`
+	Allocated Resource          `json:"allocated"`
+	// LastHeartbeat is the last liveness signal received from the node.
+	LastHeartbeat time.Time `json:"last_heartbeat"`
+	CreatedAt     time.Time `json:"created_at"`
+}
+
+// Capacity returns the total resources of the node.
+func (n Node) Capacity() Resource {
+	return Resource{CPU: n.CPU, MemoryMB: n.MemoryMB, DiskGB: n.DiskGB, GPUs: n.GPUs}
+}
+
+// Allocatable returns the resources still free for placement: capacity
+// minus the workloads already placed on the node.
+func (n Node) Allocatable() Resource {
+	return n.Capacity().Sub(n.Allocated)
+}
+
+// Matches reports whether the node labels satisfy every entry of the
+// selector. A nil or empty selector matches every node.
+func (n Node) Matches(selector map[string]string) bool {
+	for k, v := range selector {
+		if n.Labels[k] != v {
+			return false
+		}
+	}
+	return true
 }
 
 // NewNode builds a validated node in OFFLINE status. cpu, memoryMB and
