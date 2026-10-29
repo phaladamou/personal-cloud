@@ -20,6 +20,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
 // Opcode is a WebSocket frame opcode.
@@ -140,6 +141,11 @@ type Conn struct {
 
 	wmu    sync.Mutex
 	closed bool
+	// closeSent records whether this side already sent a close frame.
+	// A received close is only answered when none was sent yet;
+	// replying to a close reply would leave unread bytes in the
+	// server receive buffer and turn its clean FIN into a RST.
+	closeSent atomic.Bool
 }
 
 // frameHeader is a parsed frame prefix.
@@ -245,7 +251,9 @@ func (c *Conn) ReadMessage() (Opcode, []byte, error) {
 				return 0, nil, c.protocolError("invalid pong")
 			}
 		case OpClose:
-			_ = c.WriteMessage(OpClose, payload)
+			if !c.closeSent.Load() {
+				_ = c.WriteMessage(OpClose, payload)
+			}
 			return 0, nil, ErrClosed
 		default:
 			return 0, nil, c.protocolError("unknown opcode")
@@ -260,6 +268,9 @@ func (c *Conn) WriteMessage(op Opcode, p []byte) error {
 	defer c.wmu.Unlock()
 	if c.closed {
 		return fmt.Errorf("wsclient: write on closed connection")
+	}
+	if op == OpClose {
+		c.closeSent.Store(true)
 	}
 	var mask [4]byte
 	if _, err := rand.Read(mask[:]); err != nil {
