@@ -1061,6 +1061,8 @@ Ces choix pourront évoluer avec les besoins réels du système.
 
 > **Phase 3 (Remote Computer) en cours** : authentification par jetons d'appareils, passerelle authentifiante avec proxy de ports et CLI distante sont implémentées et testées. Voir `docs/architecture/remote-access.md`.
 
+> **Phase 4 (Compute Fabric) en cours** : registre de nœuds avec battements de cœur, ordonnanceur least-loaded, placement des workspaces et support GPU sont implémentés et testés. Voir `docs/architecture/compute-fabric.md`.
+
 Personal Cloud est actuellement au stade de construction de ses primitives fondamentales.
 
 Certaines parties de l'architecture représentent la direction à long terme du projet et ne sont pas encore implémentées.
