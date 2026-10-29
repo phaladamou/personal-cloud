@@ -97,8 +97,18 @@ func TestLocalCreateGetList(t *testing.T) {
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	if len(list) != 2 || list[0].ID != snap.ID || list[1].ID != snap2.ID {
-		t.Fatalf("List order: got %+v, want [%s %s]", list, snap.ID, snap2.ID)
+	if len(list) != 2 {
+		t.Fatalf("List: got %+v, want 2 snapshots", list)
+	}
+	ids := map[string]bool{list[0].ID: true, list[1].ID: true}
+	if !ids[snap.ID] || !ids[snap2.ID] {
+		t.Fatalf("List ids: got %+v, want [%s %s]", list, snap.ID, snap2.ID)
+	}
+	// List order is (CreatedAt, ID); CreatedAt has millisecond
+	// granularity, so assert the invariant rather than creation order.
+	if list[1].CreatedAt.Before(list[0].CreatedAt) ||
+		(list[1].CreatedAt.Equal(list[0].CreatedAt) && list[1].ID < list[0].ID) {
+		t.Fatalf("List order: got %+v, want (CreatedAt, ID) order", list)
 	}
 	list, err = snaps.List(ctx, "ws-unknown")
 	if err != nil || len(list) != 0 {
