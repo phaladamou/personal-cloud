@@ -4,9 +4,13 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/phaladamou/personal-cloud/packages/types"
+	"github.com/phaladamou/personal-cloud/runtime/process"
 )
 
 // DockerBackend is a ContainerBackend wrapping the docker CLI via os/exec.
@@ -138,4 +142,58 @@ func dockerState(status string) State {
 	default:
 		return StateStopped
 	}
+}
+
+// Processes returns the container main process from docker inspect. Only
+// the main process ("main") is tracked: per-process listing inside the
+// container is future work.
+func (d *DockerBackend) Processes(ctx context.Context, id string) ([]process.Info, error) {
+	out, err := d.run(ctx, "inspect", "--format", "{{.Path}}\t{{.State.Status}}\t{{.State.Pid}}", id)
+	if err != nil {
+		return nil, err
+	}
+	parts := strings.SplitN(out, "\t", 3)
+	if len(parts) != 3 {
+		return nil, fmt.Errorf("container: docker processes %s: unexpected inspect output %q", id, out)
+	}
+	var pid int
+	fmt.Sscanf(strings.TrimSpace(parts[2]), "%d", &pid)
+	state := types.ProcessExited
+	if dockerState(parts[1]) == StateRunning {
+		state = types.ProcessRunning
+	}
+	return []process.Info{{
+		ID:      MainProcessID,
+		Command: parts[0],
+		PID:     pid,
+		State:   state,
+	}}, nil
+}
+
+// Logs streams the container logs (docker logs) for the main process.
+// Only the "main" process id is supported.
+func (d *DockerBackend) Logs(ctx context.Context, id, processID string, follow bool) (io.ReadCloser, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if processID != MainProcessID {
+		return nil, fmt.Errorf("%w: %s in container %s", ErrProcessNotFound, processID, id)
+	}
+	args := []string{"logs", id}
+	if follow {
+		args = []string{"logs", "--follow", id}
+	}
+	pr, pw := io.Pipe()
+	cmd := exec.CommandContext(ctx, d.bin, args...)
+	cmd.Stdout = pw
+	cmd.Stderr = pw
+	if err := cmd.Start(); err != nil {
+		pr.Close()
+		pw.Close()
+		return nil, fmt.Errorf("container: docker logs %s: %w", id, err)
+	}
+	go func() {
+		pw.CloseWithError(cmd.Wait())
+	}()
+	return pr, nil
 }

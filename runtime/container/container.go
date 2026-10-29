@@ -1,20 +1,32 @@
 // Package container isolates workspace workloads.
 //
-// It defines the ContainerBackend interface (create, start, stop, remove
-// and exec with streaming stdio) with two implementations: a local
-// process-based backend that works everywhere and is the default for
-// Phase 1, and a docker backend wrapping the docker CLI, used only when
-// a daemon is present.
+// It defines the ContainerBackend interface (create, start, stop, remove,
+// exec with streaming stdio, process listing and log streaming) with two
+// implementations: a local process-based backend that works everywhere
+// and is the default, and a docker backend wrapping the docker CLI, used
+// only when a daemon is present.
 package container
 
 import (
 	"context"
 	"errors"
 	"io"
+
+	"github.com/phaladamou/personal-cloud/runtime/process"
 )
 
-// ErrNotFound is returned when no container matches the given id.
-var ErrNotFound = errors.New("container: not found")
+// Errors returned by ContainerBackend implementations.
+var (
+	// ErrNotFound is returned when no container matches the given id.
+	ErrNotFound = errors.New("container: not found")
+	// ErrProcessNotFound is returned when no process matches the given
+	// id within the container.
+	ErrProcessNotFound = errors.New("container: process not found")
+)
+
+// MainProcessID is the stable id of the container main process in
+// Processes listings and Logs calls.
+const MainProcessID = "main"
 
 // State is the lifecycle state of a container.
 type State string
@@ -53,6 +65,9 @@ type ExecOptions struct {
 	// Stdout and Stderr receive the command output. Nil discards it.
 	Stdout io.Writer
 	Stderr io.Writer
+	// ExecID optionally names the tracked process for Processes/Logs.
+	// Empty lets the backend generate one.
+	ExecID string
 }
 
 // Info is a point-in-time snapshot of a container.
@@ -74,9 +89,19 @@ type ContainerBackend interface {
 	// Remove deletes a container, stopping it first when running.
 	Remove(ctx context.Context, id string) error
 	// Exec runs a command in a running container, streaming stdio.
+	// The command is tracked as a process visible via Processes/Logs.
 	Exec(ctx context.Context, id string, opts ExecOptions) error
 	// Inspect returns a snapshot of the container metadata.
 	Inspect(ctx context.Context, id string) (Info, error)
+	// Processes lists the container main process (id "main") and the
+	// tracked exec commands, each with its current state. A container
+	// that never started lists as empty.
+	Processes(ctx context.Context, id string) ([]process.Info, error)
+	// Logs returns the combined stdout/stderr output of one container
+	// process. With follow set, reads block for new output until the
+	// process exits; otherwise the buffered output is returned and
+	// reads end with io.EOF.
+	Logs(ctx context.Context, id, processID string, follow bool) (io.ReadCloser, error)
 }
 
 // DefaultBackend returns the Phase 1 default backend: local processes.
