@@ -12,6 +12,7 @@ import (
 	"github.com/phaladamou/personal-cloud/packages/protocol"
 	"github.com/phaladamou/personal-cloud/packages/types"
 	"github.com/phaladamou/personal-cloud/runtime/filesystem"
+	"github.com/phaladamou/personal-cloud/storage/volumes"
 )
 
 // Errors returned by the file operations.
@@ -75,6 +76,39 @@ func (p DirFSProvider) FSFor(workspaceID string) (filesystem.FS, error) {
 		return nil, fmt.Errorf("controller: invalid workspace id %q", workspaceID)
 	}
 	return filesystem.NewLocalFS(filepath.Join(p.Root, id), id, "default")
+}
+
+// VolumeFSProvider serves one filesystem per workspace rooted at the
+// workspace default volume data directory, so the file operations and
+// the snapshots share the same backing store: a snapshot restore
+// brings back the files written through the file operations.
+//
+// Volumes provisions the default volume on first use (same semantics
+// as snapshots without an explicit volume id). DataPath resolves the
+// host directory holding a volume content (volumes.LocalManager.DataPath).
+type VolumeFSProvider struct {
+	Volumes  volumes.VolumeManager
+	DataPath func(workspaceID, volumeID string) string
+}
+
+// FSFor returns the LocalFS rooted at the default volume data
+// directory, provisioning the default volume on first use. The volume
+// calls use a background context: the provider interface is
+// synchronous and the local managers answer from disk.
+func (p VolumeFSProvider) FSFor(workspaceID string) (filesystem.FS, error) {
+	if p.Volumes == nil || p.DataPath == nil {
+		return nil, fmt.Errorf("controller: volume filesystem provider not configured")
+	}
+	id := strings.TrimSpace(workspaceID)
+	if id == "" || id == "." || id == ".." ||
+		strings.ContainsRune(id, '/') || strings.ContainsRune(id, filepath.Separator) {
+		return nil, fmt.Errorf("controller: invalid workspace id %q", workspaceID)
+	}
+	volID, err := ensureDefaultVolume(context.Background(), p.Volumes, id)
+	if err != nil {
+		return nil, err
+	}
+	return filesystem.NewLocalFS(p.DataPath(id, volID), id, volID)
 }
 
 // fileChangedPayload is the payload published on file operations.

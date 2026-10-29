@@ -47,7 +47,7 @@ func main() {
 	bus := protocol.NewEventBus()
 	ctrl := controller.NewController(store, container.DefaultBackend(), bus,
 		controller.WithVolumes(vols), controller.WithSnapshots(snaps),
-		controller.WithFilesystems(controller.DirFSProvider{Root: filepath.Join(*storage, "workspaces")}))
+		controller.WithFilesystems(controller.VolumeFSProvider{Volumes: vols, DataPath: vols.DataPath}))
 
 	log.Printf("api: listening on %s (store %s, storage %s)", *addr, *data, *storage)
 	if err := http.ListenAndServe(*addr, api.NewServer(ctrl, api.WithNodes(node.NewRegistry(bus)))); err != nil {

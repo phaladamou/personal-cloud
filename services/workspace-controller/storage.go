@@ -87,13 +87,10 @@ func (c *Controller) DeleteVolume(ctx context.Context, workspaceID, volumeID str
 	return c.vols.Delete(ctx, workspaceID, volumeID)
 }
 
-// defaultVolumeID returns the id of the workspace default volume,
+// ensureDefaultVolume returns the id of the workspace default volume,
 // provisioning it on first use.
-func (c *Controller) defaultVolumeID(ctx context.Context, workspaceID string) (string, error) {
-	if c.vols == nil {
-		return "", fmt.Errorf("controller: snapshot without volume id: %w", ErrVolumesUnavailable)
-	}
-	list, err := c.vols.List(ctx, workspaceID)
+func ensureDefaultVolume(ctx context.Context, vols volumes.VolumeManager, workspaceID string) (string, error) {
+	list, err := vols.List(ctx, workspaceID)
 	if err != nil {
 		return "", err
 	}
@@ -102,11 +99,20 @@ func (c *Controller) defaultVolumeID(ctx context.Context, workspaceID string) (s
 			return v.ID, nil
 		}
 	}
-	vol, err := c.vols.Create(ctx, workspaceID, defaultVolumeName, defaultVolumeSizeGB, defaultVolumeMountPath)
+	vol, err := vols.Create(ctx, workspaceID, defaultVolumeName, defaultVolumeSizeGB, defaultVolumeMountPath)
 	if err != nil {
 		return "", err
 	}
 	return vol.ID, nil
+}
+
+// defaultVolumeID returns the id of the workspace default volume,
+// provisioning it on first use.
+func (c *Controller) defaultVolumeID(ctx context.Context, workspaceID string) (string, error) {
+	if c.vols == nil {
+		return "", fmt.Errorf("controller: snapshot without volume id: %w", ErrVolumesUnavailable)
+	}
+	return ensureDefaultVolume(ctx, c.vols, workspaceID)
 }
 
 // CreateSnapshot captures the volume state and emits snapshot.created
