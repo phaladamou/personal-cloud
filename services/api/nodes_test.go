@@ -120,6 +120,68 @@ func TestNodeErrors(t *testing.T) {
 	}
 }
 
+func TestNodeHeartbeatAndCapacity(t *testing.T) {
+	env := newNodesEnv(t)
+
+	code, created := doJSON(t, env.token, http.MethodPost, env.srv.URL+"/v1/nodes", map[string]any{
+		"name": "n1", "cpu": 8, "memory_mb": 16384, "disk_gb": 200, "gpus": 1,
+	})
+	if code != http.StatusCreated {
+		t.Fatalf("register: got %d (%v), want 201", code, created)
+	}
+	id, _ := created["id"].(string)
+	if created["last_heartbeat"] == "" {
+		t.Fatalf("register heartbeat: got %v, want a timestamp", created)
+	}
+
+	code, hb := doJSON(t, env.token, http.MethodPost, env.srv.URL+"/v1/nodes/"+id+"/heartbeat", nil)
+	if code != http.StatusOK || hb["id"] != id || hb["status"] != string(types.NodeOnline) {
+		t.Fatalf("heartbeat: got %d %v", code, hb)
+	}
+	if code, _ := doJSON(t, env.token, http.MethodPost, env.srv.URL+"/v1/nodes/nope/heartbeat", nil); code != http.StatusNotFound {
+		t.Fatalf("heartbeat unknown: got %d, want 404", code)
+	}
+
+	code, placed := doJSON(t, env.token, http.MethodPost, env.srv.URL+"/v1/nodes/"+id+"/allocate",
+		map[string]any{"cpu": 3, "memory_mb": 4096, "disk_gb": 50, "gpus": 1})
+	if code != http.StatusOK {
+		t.Fatalf("allocate: got %d (%v), want 200", code, placed)
+	}
+	alloc, _ := placed["allocated"].(map[string]any)
+	if alloc["cpu"] != float64(3) || alloc["gpus"] != float64(1) {
+		t.Fatalf("allocate tracking: got %v", placed["allocated"])
+	}
+	if code, _ := doJSON(t, env.token, http.MethodPost, env.srv.URL+"/v1/nodes/"+id+"/allocate",
+		map[string]any{"gpus": 1}); code != http.StatusConflict {
+		t.Fatalf("allocate overflow: got %d, want 409", code)
+	}
+	if code, _ := doJSON(t, env.token, http.MethodPost, env.srv.URL+"/v1/nodes/"+id+"/allocate",
+		map[string]any{"cpu": -1}); code != http.StatusBadRequest {
+		t.Fatalf("allocate negative: got %d, want 400", code)
+	}
+	if code, _ := doJSON(t, env.token, http.MethodPost, env.srv.URL+"/v1/nodes/nope/allocate",
+		map[string]any{"cpu": 1}); code != http.StatusNotFound {
+		t.Fatalf("allocate unknown: got %d, want 404", code)
+	}
+
+	code, freed := doJSON(t, env.token, http.MethodPost, env.srv.URL+"/v1/nodes/"+id+"/release",
+		map[string]any{"cpu": 3, "memory_mb": 4096, "disk_gb": 50, "gpus": 1})
+	if code != http.StatusOK {
+		t.Fatalf("release: got %d (%v), want 200", code, freed)
+	}
+	if alloc, _ := freed["allocated"].(map[string]any); alloc["cpu"] != float64(0) {
+		t.Fatalf("release tracking: got %v", freed["allocated"])
+	}
+	if code, _ := doJSON(t, env.token, http.MethodPost, env.srv.URL+"/v1/nodes/"+id+"/release",
+		map[string]any{"cpu": -1}); code != http.StatusBadRequest {
+		t.Fatalf("release negative: got %d, want 400", code)
+	}
+	if code, _ := doJSON(t, env.token, http.MethodPost, env.srv.URL+"/v1/nodes/nope/release",
+		map[string]any{"cpu": 1}); code != http.StatusNotFound {
+		t.Fatalf("release unknown: got %d, want 404", code)
+	}
+}
+
 func TestNodesUnavailable(t *testing.T) {
 	env := newTestEnv(t) // No node registry.
 
@@ -131,6 +193,15 @@ func TestNodesUnavailable(t *testing.T) {
 	}
 	if code, _ := doJSON(t, env.token, http.MethodGet, env.srv.URL+"/v1/nodes/n", nil); code != http.StatusNotImplemented {
 		t.Fatalf("get without registry: got %d, want 501", code)
+	}
+	for name, path := range map[string]string{
+		"heartbeat": "/v1/nodes/n/heartbeat",
+		"allocate":  "/v1/nodes/n/allocate",
+		"release":   "/v1/nodes/n/release",
+	} {
+		if code, _ := doJSON(t, env.token, http.MethodPost, env.srv.URL+path, map[string]any{"cpu": 1}); code != http.StatusNotImplemented {
+			t.Fatalf("%s without registry: got %d, want 501", name, code)
+		}
 	}
 	req, _ := http.NewRequest(http.MethodDelete, env.srv.URL+"/v1/nodes/n", nil)
 	req.Header.Set("Authorization", "Bearer "+env.token)

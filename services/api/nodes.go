@@ -15,6 +15,9 @@ func (s *Server) nodeRoutes() {
 	s.mux.HandleFunc("GET /v1/nodes", s.listNodes)
 	s.mux.HandleFunc("GET /v1/nodes/{nid}", s.getNode)
 	s.mux.HandleFunc("DELETE /v1/nodes/{nid}", s.unregisterNode)
+	s.mux.HandleFunc("POST /v1/nodes/{nid}/heartbeat", s.heartbeatNode)
+	s.mux.HandleFunc("POST /v1/nodes/{nid}/allocate", s.allocateNode)
+	s.mux.HandleFunc("POST /v1/nodes/{nid}/release", s.releaseNode)
 }
 
 // requireNodes reports whether the node registry is configured,
@@ -29,11 +32,14 @@ func (s *Server) requireNodes(w http.ResponseWriter) bool {
 
 // writeNodeError maps registry errors to status codes.
 func writeNodeError(w http.ResponseWriter, err error) {
-	if errors.Is(err, node.ErrNodeNotFound) {
+	switch {
+	case errors.Is(err, node.ErrNodeNotFound):
 		writeError(w, http.StatusNotFound, err.Error())
-		return
+	case errors.Is(err, node.ErrInsufficientCapacity), errors.Is(err, node.ErrNodeNotReady):
+		writeError(w, http.StatusConflict, err.Error())
+	default:
+		writeError(w, http.StatusInternalServerError, "internal error")
 	}
-	writeError(w, http.StatusInternalServerError, "internal error")
 }
 
 // registerNodeRequest is the POST /v1/nodes body.
@@ -107,4 +113,70 @@ func (s *Server) unregisterNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) heartbeatNode(w http.ResponseWriter, r *http.Request) {
+	if !s.requireNodes(w) {
+		return
+	}
+	n, err := s.nodes.Heartbeat(r.Context(), r.PathValue("nid"))
+	if err != nil {
+		writeNodeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, n)
+}
+
+// capacityRequest is the POST .../allocate and .../release body.
+type capacityRequest struct {
+	CPU      int   `json:"cpu"`
+	MemoryMB int64 `json:"memory_mb"`
+	DiskGB   int64 `json:"disk_gb"`
+	GPUs     int   `json:"gpus"`
+}
+
+func (s *Server) allocateNode(w http.ResponseWriter, r *http.Request) {
+	if !s.requireNodes(w) {
+		return
+	}
+	var req capacityRequest
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes))
+	if err := dec.Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	want := types.Resource{CPU: req.CPU, MemoryMB: req.MemoryMB, DiskGB: req.DiskGB, GPUs: req.GPUs}
+	if want.Negative() {
+		writeError(w, http.StatusBadRequest, "resource request must not be negative")
+		return
+	}
+	n, err := s.nodes.Allocate(r.Context(), r.PathValue("nid"), want)
+	if err != nil {
+		writeNodeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, n)
+}
+
+func (s *Server) releaseNode(w http.ResponseWriter, r *http.Request) {
+	if !s.requireNodes(w) {
+		return
+	}
+	var req capacityRequest
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes))
+	if err := dec.Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	want := types.Resource{CPU: req.CPU, MemoryMB: req.MemoryMB, DiskGB: req.DiskGB, GPUs: req.GPUs}
+	if want.Negative() {
+		writeError(w, http.StatusBadRequest, "resource release must not be negative")
+		return
+	}
+	n, err := s.nodes.Release(r.Context(), r.PathValue("nid"), want)
+	if err != nil {
+		writeNodeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, n)
 }
