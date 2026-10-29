@@ -12,10 +12,16 @@ contrôleur et exposés via l'API et la CLI.
 
 ```text
 <storage>/
-├── volumes/      # LocalManager des volumes
-├── snapshots/    # LocalManager des snapshots
-└── workspaces/   # fichiers servis par l'API files (DirFSProvider)
+├── volumes/      # LocalManager des volumes (+ fichiers de l'API files)
+└── snapshots/    # LocalManager des snapshots
 ```
+
+L'API files et les snapshots partagent le même support : les
+opérations files sont enracinées sur le répertoire `data` du volume
+`default` du workspace (`VolumeFSProvider`). Un snapshot capture
+donc exactement ce que `pc files put` dépose, et un restore ramène
+les fichiers (prouvé par `TestFilesSurviveSnapshotRestore` et le e2e
+put → snapshot → rm → restore → cat).
 
 ## Volumes (`storage/volumes`)
 
@@ -94,10 +100,12 @@ DELETE /v1/workspaces/{id}/snapshots/{sid}
 CLI (`apps/cli/snapshot.go`) : `pc snapshot create <id> [--volume ID]
 [--name NAME]`, `list`, `restore`, `delete`.
 
-## Limite connue
+## Convergence files / volumes
 
-L'API files (`DirFSProvider`, `<storage>/workspaces/<id>/`) et les
-volumes (`<storage>/volumes/…`) sont aujourd'hui deux arborescences
-disjointes : restaurer un snapshot ne restaure pas les fichiers
-déposés via `pc files put`. Le chantier de convergence consiste à
-adosser les opérations files au volume `default` du workspace.
+Historiquement, l'API files écrivait sous `<storage>/workspaces/<id>/`
+(`DirFSProvider`) pendant que les snapshots capturaient
+`<storage>/volumes/…` : un restore ne ramenait pas les fichiers. La
+convergence adosse les opérations files au volume `default`
+(`VolumeFSProvider`), avec provisionnement paresseux identique à
+celui des snapshots. `DirFSProvider` subsiste pour les usages sans
+volumes (tests, binaires sans stockage).
