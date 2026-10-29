@@ -54,13 +54,21 @@ type Event struct {
 	Payload     json.RawMessage `json:"payload,omitempty"`
 }
 
+// nodeScoped reports whether the event is cluster-scoped (node
+// lifecycle) rather than workspace-scoped.
+func (t EventType) nodeScoped() bool {
+	return t == EventNodeConnected || t == EventNodeDisconnected
+}
+
 // NewEvent builds a validated event. payload, when non-nil, is marshaled
-// to JSON; a nil payload leaves the field empty.
+// to JSON; a nil payload leaves the field empty. The workspace id is
+// required, except for cluster-scoped node events where it stays empty
+// and the node travels in the payload.
 func NewEvent(typ EventType, workspaceID string, payload any) (Event, error) {
 	if !typ.Valid() {
 		return Event{}, fmt.Errorf("protocol: unknown event type %q", typ)
 	}
-	if strings.TrimSpace(workspaceID) == "" {
+	if strings.TrimSpace(workspaceID) == "" && !typ.nodeScoped() {
 		return Event{}, fmt.Errorf("protocol: empty workspace id")
 	}
 	ev := Event{

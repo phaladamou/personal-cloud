@@ -73,6 +73,17 @@ func TestNewEvent(t *testing.T) {
 			t.Fatalf("expected error, got nil")
 		}
 	})
+	t.Run("node events are cluster-scoped", func(t *testing.T) {
+		for _, typ := range []EventType{EventNodeConnected, EventNodeDisconnected} {
+			ev, err := NewEvent(typ, "", map[string]string{"id": "node-1"})
+			if err != nil {
+				t.Fatalf("%s: unexpected error: %v", typ, err)
+			}
+			if ev.WorkspaceID != "" {
+				t.Fatalf("%s: workspace id = %q, want empty", typ, ev.WorkspaceID)
+			}
+		}
+	})
 }
 
 func TestEventEncodeDecode(t *testing.T) {
