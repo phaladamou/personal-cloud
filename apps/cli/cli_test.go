@@ -11,11 +11,14 @@ import (
 	"github.com/phaladamou/personal-cloud/packages/protocol"
 	"github.com/phaladamou/personal-cloud/services/api"
 	"github.com/phaladamou/personal-cloud/services/auth"
+	"github.com/phaladamou/personal-cloud/services/gateway"
 	controller "github.com/phaladamou/personal-cloud/services/workspace-controller"
 )
 
-// cliEnv wires the CLI test harness: a real API over a temp store and
-// fake runtime, with PC_CONFIG_DIR and PC_API pointed at temp values.
+// cliEnv wires the CLI test harness: a real API behind the gateway
+// over a temp store and fake runtime, with PC_CONFIG_DIR and PC_API
+// pointed at temp values. Every CLI flow runs through the gateway,
+// like production traffic.
 type cliEnv struct {
 	getenv func(string) string
 	vars   map[string]string
@@ -29,7 +32,9 @@ func newCLIEnv(t *testing.T) (*httptest.Server, *controller.FakeBackend, *cliEnv
 	}
 	backend := &controller.FakeBackend{}
 	ctrl := controller.NewController(store, backend, protocol.NewEventBus())
-	srv := httptest.NewServer(api.NewServer(ctrl, api.WithAuth(newCLIAuth(t))))
+	authSvc := newCLIAuth(t)
+	gw := gateway.New(gateway.NewRegistry(), api.NewServer(ctrl, api.WithAuth(authSvc)), gateway.WithAuth(authSvc))
+	srv := httptest.NewServer(gw)
 	t.Cleanup(srv.Close)
 	env := &cliEnv{vars: map[string]string{
 		"PC_CONFIG_DIR": t.TempDir(),

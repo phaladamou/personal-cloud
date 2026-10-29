@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"time"
 
 	"github.com/phaladamou/personal-cloud/packages/types"
@@ -328,4 +329,43 @@ func (c *Client) ProcessLogs(ctx context.Context, workspaceID, processID string,
 		path += "?follow=true"
 	}
 	return c.doStream(ctx, http.MethodGet, path, w)
+}
+
+// PortForward is one workspace port forward: the gateway serves the
+// workspace service at target (host:port) under
+// /v1/workspaces/{id}/ports/{port}/....
+type PortForward struct {
+	WorkspaceID string `json:"workspace_id"`
+	Port        int    `json:"port"`
+	Target      string `json:"target"`
+	Protocol    string `json:"protocol"`
+}
+
+// RegisterPort exposes the workspace service at target (host:port) on
+// port. An empty protocol registers the server default (tcp).
+func (c *Client) RegisterPort(workspaceID string, port int, target, protocol string) (PortForward, error) {
+	var fwd PortForward
+	body := map[string]any{"port": port, "target": target}
+	if protocol != "" {
+		body["protocol"] = protocol
+	}
+	err := c.do(http.MethodPost, "/v1/workspaces/"+url.PathEscape(workspaceID)+"/ports", body, &fwd)
+	return fwd, err
+}
+
+// ListPorts returns every port forward of the workspace, ordered by port.
+func (c *Client) ListPorts(workspaceID string) ([]PortForward, error) {
+	var out struct {
+		Ports []PortForward `json:"ports"`
+	}
+	if err := c.do(http.MethodGet, "/v1/workspaces/"+url.PathEscape(workspaceID)+"/ports", nil, &out); err != nil {
+		return nil, err
+	}
+	return out.Ports, nil
+}
+
+// RemovePort drops the forward serving port on the workspace.
+func (c *Client) RemovePort(workspaceID string, port int) error {
+	return c.do(http.MethodDelete,
+		"/v1/workspaces/"+url.PathEscape(workspaceID)+"/ports/"+strconv.Itoa(port), nil, nil)
 }
