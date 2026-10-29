@@ -16,29 +16,35 @@ Les composants communiquent via des événements typés
 
 - `type` : l'un des 10 noms ci-dessous (validé à la construction
   comme au décodage).
-- `workspace_id` : identifiant du workspace concerné (obligatoire).
+- `workspace_id` : identifiant du workspace concerné. Obligatoire,
+  sauf pour les événements `node.*` (portée cluster) où il reste vide
+  et le nœud voyage dans le payload.
 - `timestamp` : horodatage UTC à la milliseconde.
 - `payload` : données spécifiques en JSON brut (optionnel) ;
   `DecodePayload` le désérialise.
 
 ## Types définis
 
-| Événement          | Émetteur actuel              | Payload                    |
-| ------------------ | ---------------------------- | -------------------------- |
-| `workspace.created`  | contrôleur (`Create`)      | `{"status": "CREATED"}`    |
-| `workspace.started`  | contrôleur (`Start`, `Wakeup`, `Restore`) | `{"status": "RUNNING"}` |
-| `workspace.stopped`  | contrôleur (`Stop`)        | `{"status": "STOPPED"}`    |
-| `process.started`    | réservé (Phase 2+)         | —                          |
-| `process.stdout`     | réservé (Phase 2+)         | —                          |
-| `process.exited`     | réservé (Phase 2+)         | —                          |
-| `file.changed`       | réservé (Phase 2+)         | —                          |
-| `snapshot.created`   | réservé (Phase 2+)         | —                          |
-| `node.connected`     | réservé (Phases 4/6)       | —                          |
-| `node.disconnected`  | réservé (Phases 4/6)       | —                          |
+| Événement            | Émetteur actuel                                  | Payload                                                      |
+| -------------------- | ------------------------------------------------ | ------------------------------------------------------------ |
+| `workspace.created`  | contrôleur (`Create`)                            | `{"status": "CREATED"}`                                      |
+| `workspace.started`  | contrôleur (`Start`, `Wakeup`, `Restore`)        | `{"status": "RUNNING"}`                                      |
+| `workspace.stopped`  | contrôleur (`Stop`)                              | `{"status": "STOPPED"}`                                      |
+| `process.started`    | contrôleur (`Exec`)                              | `{"process_id": "exec-…", "command": ["echo", "hi"]}`        |
+| `process.stdout`     | contrôleur (`Exec`, par morceau de sortie)       | `{"process_id": "exec-…", "data": "hi\n"}`                   |
+| `process.exited`     | contrôleur (`Exec`)                              | `{"process_id": "exec-…", "exit_code": 0}` (+ `error` si échec) |
+| `file.changed`       | contrôleur (`WriteFile`, `Mkdir`, `DeleteFile`)  | `{"path": "a/b.txt", "op": "write\|mkdir\|delete"}`          |
+| `snapshot.created`   | contrôleur (`CreateSnapshot`)                    | le snapshot                                                  |
+| `node.connected`     | registre des nœuds (`Register`)                  | le nœud                                                      |
+| `node.disconnected`  | registre des nœuds (`Unregister`)                | le nœud                                                      |
 
-Seuls les trois événements du cycle de vie des workspaces sont émis
-aujourd'hui ; les autres noms sont réservés pour que les futurs
-émetteurs partagent le même contrat.
+Les dix types ont un émetteur. Les trois événements `process.*`
+décrivent les commandes `Exec` : `process.started` avant l'exécution,
+un `process.stdout` par morceau de sortie (stdout et stderr combinés),
+puis `process.exited` avec le code de sortie (`-1` et un message
+`error` en cas d'échec). L'`process_id` partagé est aussi celui des
+listes de processus et des logs (`GET …/processes`,
+`GET …/processes/{pid}/logs`).
 
 ## Bus (`EventBus`)
 

@@ -34,7 +34,8 @@ Toute autre transition est rejetée (`409 Conflict` via l'API).
   `workspace.started`. En cas d'échec, retour en STOPPED.
 - `Delete` : supprime un workspace CREATED, STOPPED ou SLEEPING
   ainsi que son conteneur.
-- `Exec` : exécute une commande dans le conteneur du workspace.
+- `Exec` : exécute une commande dans le conteneur du workspace, en
+  émettant `process.started`, `process.stdout` puis `process.exited`.
 - `Get`, `List` : lecture depuis le magasin.
 
 ## Persistance

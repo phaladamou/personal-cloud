@@ -8,7 +8,8 @@ pour les tests.
 ## Conteneurs (`runtime/container`)
 
 Interface `ContainerBackend` : `Create`, `Start`, `Stop` (idempotent),
-`Remove`, `Exec` (stdio en streaming), `Inspect`.
+`Remove`, `Exec` (stdio en streaming, commandes suivies), `Inspect`,
+`Processes`, `Logs` (snapshot ou suivi).
 
 - `local` (défaut de la Phase 1, `container.DefaultBackend()`) :
   conteneurs simulés par des processus OS, redémarrables. Utilisé par
@@ -20,15 +21,15 @@ Interface `ContainerBackend` : `Create`, `Start`, `Stop` (idempotent),
 ## Processus (`runtime/process`)
 
 Interface `ProcessManager` : `Start`, `Stop`, `Signal`, `Wait`,
-`Logs` (streaming), `Inspect`.
+`Logs` (streaming), `LogsSnapshot` (sans blocage), `Inspect`.
 
 - `local` : exécution via `os/exec`.
 - `fake` (`FakeProcessManager`) : processus simulés pour les tests.
 
 ## Filesystem (`runtime/filesystem`)
 
-Interface `FS` : `read`, `write`, `move`, `delete`, `stat`, `list`,
-`watch`, `snapshot`, `restore`.
+Interface `FS` : `read`, `write`, `mkdir`, `move`, `delete`, `stat`,
+`list`, `watch`, `snapshot`, `restore`.
 
 - `local` (`LocalFS`) : adossé à un répertoire racine.
 - `mem` (`MemFS`) : en mémoire, pour les tests.
