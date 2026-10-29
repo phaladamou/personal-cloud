@@ -62,6 +62,13 @@ var defaultInitCommand = []string{"sleep", "infinity"}
 // their logs. Exec emits process.started, process.stdout and
 // process.exited for every command.
 //
+// Placement (see placement.go) is optional: with a scheduler
+// configured (WithScheduler), Start and Restore reserve the workspace
+// recorded requirements on a node and persist the assigned NodeID
+// before booting; Stop and Delete free the reservation. Placement
+// failure leaves the workspace untouched. Without a scheduler,
+// workspaces start unplaced on the local backend.
+//
 // A nil bus disables event publishing. Methods are safe for concurrent
 // use.
 type Controller struct {
@@ -69,6 +76,7 @@ type Controller struct {
 	backend container.ContainerBackend
 	bus     *protocol.EventBus
 	initCmd []string
+	sched   Scheduler
 	vols    volumes.VolumeManager
 	snaps   snapshots.SnapshotManager
 	fs      FilesystemProvider
@@ -189,21 +197,10 @@ func (c *Controller) bootContainer(ctx context.Context, ws types.Workspace) (str
 	return id, nil
 }
 
-// Create registers a new workspace in CREATED status.
+// Create registers a new workspace in CREATED status without placement
+// requirements. Use CreateWithResources to record requirements.
 func (c *Controller) Create(ctx context.Context, userID, name string) (types.Workspace, error) {
-	id, err := generateID()
-	if err != nil {
-		return types.Workspace{}, fmt.Errorf("controller: generate id: %w", err)
-	}
-	ws, err := types.NewWorkspace(id, userID, name)
-	if err != nil {
-		return types.Workspace{}, err
-	}
-	if err := c.store.Create(ctx, ws); err != nil {
-		return types.Workspace{}, err
-	}
-	c.emit(protocol.EventWorkspaceCreated, ws)
-	return ws, nil
+	return c.CreateWithResources(ctx, userID, name, PlacementRequest{})
 }
 
 // Get returns the workspace with the given id.
@@ -216,7 +213,11 @@ func (c *Controller) List(ctx context.Context) ([]types.Workspace, error) {
 	return c.store.List(ctx)
 }
 
-// Start boots a CREATED or STOPPED workspace into RUNNING.
+// Start boots a CREATED or STOPPED workspace into RUNNING. With a
+// scheduler configured, it places the workspace first: placement
+// failure returns the scheduler error with the workspace untouched;
+// a later boot failure releases the reservation and falls back to
+// STOPPED.
 func (c *Controller) Start(ctx context.Context, id string) (types.Workspace, error) {
 	ws, err := c.store.Get(ctx, id)
 	if err != nil {
@@ -225,13 +226,21 @@ func (c *Controller) Start(ctx context.Context, id string) (types.Workspace, err
 	if ws.Status != types.WorkspaceCreated && ws.Status != types.WorkspaceStopped {
 		return types.Workspace{}, fmt.Errorf("%w: cannot start workspace in %s", ErrIllegalTransition, ws.Status)
 	}
+	ws, err = c.place(ctx, ws)
+	if err != nil {
+		return types.Workspace{}, err
+	}
 	ws, err = c.transition(ctx, ws, types.WorkspaceStarting)
 	if err != nil {
 		return types.Workspace{}, err
 	}
 	if _, err := c.bootContainer(ctx, ws); err != nil {
+		bootErr := err
+		if unplaced, uerr := c.unplace(ctx, ws); uerr == nil {
+			ws = unplaced
+		}
 		ws, _ = c.transition(ctx, ws, types.WorkspaceStopped)
-		return types.Workspace{}, fmt.Errorf("controller: start %s: %w", id, err)
+		return types.Workspace{}, fmt.Errorf("controller: start %s: %w", id, bootErr)
 	}
 	ws, err = c.transition(ctx, ws, types.WorkspaceRunning)
 	if err != nil {
@@ -302,11 +311,18 @@ func (c *Controller) Stop(ctx context.Context, id string) (types.Workspace, erro
 	if err != nil {
 		return types.Workspace{}, err
 	}
+	// The reservation is freed: stopping the workload is the primary
+	// effect, so a persistence hiccup here must not fail the Stop.
+	if unplaced, uerr := c.unplace(ctx, ws); uerr == nil {
+		ws = unplaced
+	}
 	c.emit(protocol.EventWorkspaceStopped, ws)
 	return ws, nil
 }
 
 // Restore brings a STOPPED workspace back to RUNNING through RESTORING.
+// Like Start, it places the workspace first when a scheduler is
+// configured (Stop freed the previous reservation).
 func (c *Controller) Restore(ctx context.Context, id string) (types.Workspace, error) {
 	ws, err := c.store.Get(ctx, id)
 	if err != nil {
@@ -315,13 +331,21 @@ func (c *Controller) Restore(ctx context.Context, id string) (types.Workspace, e
 	if ws.Status != types.WorkspaceStopped {
 		return types.Workspace{}, fmt.Errorf("%w: cannot restore workspace in %s", ErrIllegalTransition, ws.Status)
 	}
+	ws, err = c.place(ctx, ws)
+	if err != nil {
+		return types.Workspace{}, err
+	}
 	ws, err = c.transition(ctx, ws, types.WorkspaceRestoring)
 	if err != nil {
 		return types.Workspace{}, err
 	}
 	if _, err := c.bootContainer(ctx, ws); err != nil {
+		bootErr := err
+		if unplaced, uerr := c.unplace(ctx, ws); uerr == nil {
+			ws = unplaced
+		}
 		ws, _ = c.transition(ctx, ws, types.WorkspaceStopped)
-		return types.Workspace{}, fmt.Errorf("controller: restore %s: %w", id, err)
+		return types.Workspace{}, fmt.Errorf("controller: restore %s: %w", id, bootErr)
 	}
 	ws, err = c.transition(ctx, ws, types.WorkspaceRunning)
 	if err != nil {
@@ -332,8 +356,9 @@ func (c *Controller) Restore(ctx context.Context, id string) (types.Workspace, e
 }
 
 // Delete removes a CREATED, STOPPED, or SLEEPING workspace, its
-// container, and (best-effort) its volumes and snapshots. A missing
-// container is ignored.
+// container, its scheduler reservation (best-effort), and
+// (best-effort) its volumes and snapshots. A missing container is
+// ignored.
 func (c *Controller) Delete(ctx context.Context, id string) error {
 	ws, err := c.store.Get(ctx, id)
 	if err != nil {
@@ -347,6 +372,11 @@ func (c *Controller) Delete(ctx context.Context, id string) error {
 			return fmt.Errorf("controller: delete %s: %w", id, err)
 		}
 		c.unbindContainer(id)
+	}
+	// A placed workspace (SLEEPING still holds its reservation) frees
+	// it best-effort; the record goes away with the Delete below.
+	if ws.NodeID != "" && c.sched != nil {
+		_, _ = c.sched.Release(ctx, ws.NodeID, ws.Resources)
 	}
 	if err := c.store.Delete(ctx, id); err != nil {
 		return err

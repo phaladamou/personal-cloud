@@ -6,12 +6,14 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"flag"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/phaladamou/personal-cloud/compute/node"
 	"github.com/phaladamou/personal-cloud/packages/protocol"
@@ -19,6 +21,7 @@ import (
 	"github.com/phaladamou/personal-cloud/services/api"
 	"github.com/phaladamou/personal-cloud/services/auth"
 	"github.com/phaladamou/personal-cloud/services/gateway"
+	"github.com/phaladamou/personal-cloud/services/scheduler"
 	controller "github.com/phaladamou/personal-cloud/services/workspace-controller"
 	"github.com/phaladamou/personal-cloud/storage/snapshots"
 	"github.com/phaladamou/personal-cloud/storage/volumes"
@@ -30,6 +33,8 @@ func main() {
 	storage := flag.String("storage", "./data/storage", "root directory for volumes and snapshots")
 	authSecret := flag.String("auth-secret", "", "HMAC secret for auth tokens (env PC_AUTH_SECRET, else generated under storage)")
 	gatewayMode := flag.Bool("gateway", true, "front the API with the authenticating gateway (ports proxy, guarded terminal)")
+	heartbeatTimeout := flag.Duration("heartbeat-timeout", node.DefaultHeartbeatTimeout, "liveness window after which a silent node is marked OFFLINE")
+	sweepInterval := flag.Duration("sweep-interval", 10*time.Second, "how often stale nodes are expired (non-positive disables the sweeper)")
 	flag.Parse()
 
 	if dir := filepath.Dir(*data); dir != "" {
@@ -69,12 +74,17 @@ func main() {
 	}
 
 	bus := protocol.NewEventBus()
+	nodes := node.NewRegistry(bus, node.WithHeartbeatTimeout(*heartbeatTimeout))
+	if *sweepInterval > 0 {
+		go runSweeper(context.Background(), nodes, *sweepInterval)
+	}
 	ctrl := controller.NewController(store, container.DefaultBackend(), bus,
 		controller.WithVolumes(vols), controller.WithSnapshots(snaps),
-		controller.WithFilesystems(controller.VolumeFSProvider{Volumes: vols, DataPath: vols.DataPath}))
+		controller.WithFilesystems(controller.VolumeFSProvider{Volumes: vols, DataPath: vols.DataPath}),
+		controller.WithScheduler(scheduler.New(nodes)))
 
 	log.Printf("api: listening on %s (store %s, storage %s)", *addr, *data, *storage)
-	apiSrv := api.NewServer(ctrl, api.WithNodes(node.NewRegistry(bus)), api.WithAuth(authSvc))
+	apiSrv := api.NewServer(ctrl, api.WithNodes(nodes), api.WithAuth(authSvc))
 	var handler http.Handler = apiSrv
 	if *gatewayMode {
 		handler = gateway.New(gateway.NewRegistry(), apiSrv, gateway.WithAuth(authSvc))
@@ -82,6 +92,28 @@ func main() {
 	}
 	if err := http.ListenAndServe(*addr, handler); err != nil {
 		log.Fatalf("api: serve: %v", err)
+	}
+}
+
+// runSweeper expires heartbeat-stale nodes every interval until ctx ends,
+// so agents that stop heartbeating are marked OFFLINE and the scheduler
+// stops placing new work on them. Each newly offline node is logged.
+func runSweeper(ctx context.Context, nodes *node.Registry, interval time.Duration) {
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			stale, err := nodes.Sweep(ctx)
+			if err != nil {
+				continue
+			}
+			for _, n := range stale {
+				log.Printf("api: node %s (%s) missed heartbeat, marked OFFLINE", n.ID, n.Name)
+			}
+		}
 	}
 }
 

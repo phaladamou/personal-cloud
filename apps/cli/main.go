@@ -20,10 +20,10 @@ const usage = `Usage: pc [--api URL] <command> [args]
 Commands:
   login [device] [--device NAME] [--user ID]
                                  exchange a device token with the server
-  workspace create <name> [--user ID]
+  workspace create <name> [--user ID] [--cpu N] [--mem MB] [--disk GB] [--gpus N] [--selector k=v]
   workspace list
   workspace get <id>
-  workspace start <id>
+  workspace start <id> [--cpu N] [--mem MB] [--disk GB] [--gpus N] [--selector k=v]
   workspace stop <id>
   workspace delete <id>
   snapshot create <id> [--volume ID] [--name NAME]
@@ -40,6 +40,10 @@ Commands:
   ports register <id> <port> <target>
   ports list <id>
   ports remove <id> <port>
+  node register <name> --cpu N --mem MB --disk GB [--gpus N] [--label k=v]
+  node list
+  node get <id>
+  node deregister <id>
   exec <id> -- <cmd> [args...]   run a command in a workspace
   help                           show this help
 
@@ -108,6 +112,8 @@ func run(args []string, stdout, stderr io.Writer, stdin io.Reader, getenv func(s
 		err = cmdLogs(client, rest[1:], stdout)
 	case "ports":
 		err = cmdPorts(client, rest[1:], stdout)
+	case "node":
+		err = cmdNode(client, rest[1:], stdout)
 	case "exec":
 		err = cmdExec(client, rest[1:], execCmd, stdout, stderr, stdin)
 	default:

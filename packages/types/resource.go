@@ -37,6 +37,45 @@ func (r Resource) Fits(cap Resource) bool {
 		r.GPUs <= cap.GPUs
 }
 
+// Negative reports whether any component of r is negative.
+func (r Resource) Negative() bool {
+	return r.CPU < 0 || r.MemoryMB < 0 || r.DiskGB < 0 || r.GPUs < 0
+}
+
+// Add returns the component-wise sum of r and o.
+func (r Resource) Add(o Resource) Resource {
+	return Resource{
+		CPU:      r.CPU + o.CPU,
+		MemoryMB: r.MemoryMB + o.MemoryMB,
+		DiskGB:   r.DiskGB + o.DiskGB,
+		GPUs:     r.GPUs + o.GPUs,
+	}
+}
+
+// Sub returns the component-wise difference r minus o, clamped at zero
+// so a release larger than the allocation never goes negative.
+func (r Resource) Sub(o Resource) Resource {
+	out := Resource{
+		CPU:      r.CPU - o.CPU,
+		MemoryMB: r.MemoryMB - o.MemoryMB,
+		DiskGB:   r.DiskGB - o.DiskGB,
+		GPUs:     r.GPUs - o.GPUs,
+	}
+	if out.CPU < 0 {
+		out.CPU = 0
+	}
+	if out.MemoryMB < 0 {
+		out.MemoryMB = 0
+	}
+	if out.DiskGB < 0 {
+		out.DiskGB = 0
+	}
+	if out.GPUs < 0 {
+		out.GPUs = 0
+	}
+	return out
+}
+
 // String returns a short human-readable representation of the resource.
 func (r Resource) String() string {
 	return fmt.Sprintf("%dcpu/%dMB/%dGB/%dgpu", r.CPU, r.MemoryMB, r.DiskGB, r.GPUs)

@@ -2,6 +2,7 @@ package types
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -72,6 +73,30 @@ func TestNewWorkspace(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestWorkspacePlacementFields(t *testing.T) {
+	w, err := NewWorkspace("w-1", "u-1", "dev")
+	if err != nil {
+		t.Fatalf("NewWorkspace: %v", err)
+	}
+	if w.WantsPlacement() {
+		t.Fatal("fresh workspace wants placement, want none")
+	}
+	w.Resources = Resource{CPU: 2, MemoryMB: 1024, DiskGB: 10, GPUs: 1}
+	w.Selector = map[string]string{"zone": "east"}
+	if !w.WantsPlacement() {
+		t.Fatal("workspace with requirements wants no placement, want some")
+	}
+	// Stores written before the placement fields decode to a
+	// zero-requirement workspace: no placement, old behavior.
+	var old Workspace
+	if err := json.Unmarshal([]byte(`{"id":"w-1","user_id":"u-1","name":"dev","status":"CREATED"}`), &old); err != nil {
+		t.Fatalf("decode old workspace: %v", err)
+	}
+	if old.WantsPlacement() || old.NodeID != "" {
+		t.Fatalf("old workspace: got %+v, want no placement", old)
 	}
 }
 
@@ -340,7 +365,7 @@ func TestJSONRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(raw, &back); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if back != w {
+	if !reflect.DeepEqual(back, w) {
 		t.Fatalf("round-trip mismatch: %+v vs %+v", back, w)
 	}
 }

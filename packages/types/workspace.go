@@ -65,14 +65,22 @@ func (s WorkspaceStatus) String() string {
 
 // Workspace is the fundamental unit of Personal Cloud: a persistent
 // computing environment owned by a user.
+//
+// Resources holds the compute requirements recorded at creation (zero
+// means "no requirement": the workspace runs wherever the local
+// backend is). Selector constrains placement to the nodes whose
+// labels satisfy it. NodeID is the scheduler placement, set on Start
+// and cleared on Stop; empty means unplaced.
 type Workspace struct {
-	ID        string          `json:"id"`
-	UserID    string          `json:"user_id"`
-	Name      string          `json:"name"`
-	Status    WorkspaceStatus `json:"status"`
-	NodeID    string          `json:"node_id,omitempty"`
-	CreatedAt time.Time       `json:"created_at"`
-	UpdatedAt time.Time       `json:"updated_at"`
+	ID        string            `json:"id"`
+	UserID    string            `json:"user_id"`
+	Name      string            `json:"name"`
+	Status    WorkspaceStatus   `json:"status"`
+	NodeID    string            `json:"node_id,omitempty"`
+	Resources Resource          `json:"resources"`
+	Selector  map[string]string `json:"selector,omitempty"`
+	CreatedAt time.Time         `json:"created_at"`
+	UpdatedAt time.Time         `json:"updated_at"`
 }
 
 // NewWorkspace builds a validated workspace in CREATED status.
@@ -112,6 +120,12 @@ func (w *Workspace) TransitionTo(next WorkspaceStatus) error {
 	w.Status = next
 	w.UpdatedAt = nowUTC()
 	return nil
+}
+
+// WantsPlacement reports whether the workspace carries placement
+// requirements: non-zero resources or a non-empty node selector.
+func (w Workspace) WantsPlacement() bool {
+	return w.Resources != (Resource{}) || len(w.Selector) > 0
 }
 
 // String returns a short human-readable representation of the workspace.

@@ -35,8 +35,15 @@ Les composants communiquent via des événements typés
 | `process.exited`     | contrôleur (`Exec`)                              | `{"process_id": "exec-…", "exit_code": 0}` (+ `error` si échec) |
 | `file.changed`       | contrôleur (`WriteFile`, `Mkdir`, `DeleteFile`)  | `{"path": "a/b.txt", "op": "write\|mkdir\|delete"}`          |
 | `snapshot.created`   | contrôleur (`CreateSnapshot`)                    | le snapshot                                                  |
-| `node.connected`     | registre des nœuds (`Register`)                  | le nœud                                                      |
-| `node.disconnected`  | registre des nœuds (`Unregister`)                | le nœud                                                      |
+
+Les événements `node.*` suivent les transitions de connectivité :
+`Register` (y compris le ré-enregistrement d'un identifiant connu)
+et `Heartbeat` sur un nœud `OFFLINE` émettent `node.connected` ;
+`Unregister` et `Sweep` (battement plus ancien que le délai
+configuré, 30 s par défaut) émettent `node.disconnected`. Un second
+`Sweep` sans nouveau battement reste silencieux.
+| `node.connected`     | registre des nœuds (`Register`, `Heartbeat`)     | le nœud                                                      |
+| `node.disconnected`  | registre des nœuds (`Unregister`, `Sweep`)       | le nœud                                                      |
 
 Les dix types ont un émetteur. Les trois événements `process.*`
 décrivent les commandes `Exec` : `process.started` avant l'exécution,

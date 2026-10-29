@@ -3,12 +3,14 @@
 // It is stdlib-only (net/http) and thin by design: every route decodes
 // its input, delegates to the workspace controller, and maps errors to
 // status codes (400 validation, 404 unknown workspace, 409 illegal
-// transition, 500 internal). The exec endpoint upgrades to a WebSocket
-// (see internal/ws) and streams the command stdio as binary messages;
-// a final `error: ...` text message marks a failed command.
+// transition or unsatisfiable placement, 500 internal). The exec
+// endpoint upgrades to a WebSocket (see internal/ws) and streams the
+// command stdio as binary messages; a final `error: ...` text message
+// marks a failed command.
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -21,6 +23,7 @@ import (
 	"github.com/phaladamou/personal-cloud/runtime/container"
 	"github.com/phaladamou/personal-cloud/services/api/internal/ws"
 	"github.com/phaladamou/personal-cloud/services/auth"
+	"github.com/phaladamou/personal-cloud/services/scheduler"
 	controller "github.com/phaladamou/personal-cloud/services/workspace-controller"
 )
 
@@ -55,7 +58,7 @@ func NewServer(ctrl *controller.Controller, opts ...Option) *Server {
 	s.mux.HandleFunc("GET /v1/workspaces", s.listWorkspaces)
 	s.mux.HandleFunc("GET /v1/workspaces/{id}", s.getWorkspace)
 	s.mux.HandleFunc("DELETE /v1/workspaces/{id}", s.deleteWorkspace)
-	s.mux.HandleFunc("POST /v1/workspaces/{id}/start", s.transition((*controller.Controller).Start))
+	s.mux.HandleFunc("POST /v1/workspaces/{id}/start", s.startWorkspace)
 	s.mux.HandleFunc("POST /v1/workspaces/{id}/stop", s.transition((*controller.Controller).Stop))
 	s.mux.HandleFunc("POST /v1/workspaces/{id}/sleep", s.transition((*controller.Controller).Sleep))
 	s.mux.HandleFunc("POST /v1/workspaces/{id}/wakeup", s.transition((*controller.Controller).Wakeup))
@@ -108,7 +111,7 @@ func writeControllerError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, controller.ErrWorkspaceNotFound):
 		writeError(w, http.StatusNotFound, err.Error())
-	case errors.Is(err, controller.ErrIllegalTransition):
+	case errors.Is(err, controller.ErrIllegalTransition), errors.Is(err, scheduler.ErrNoFit):
 		writeError(w, http.StatusConflict, err.Error())
 	default:
 		writeError(w, http.StatusInternalServerError, "internal error")
@@ -119,10 +122,31 @@ func (s *Server) healthz(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
+// placementFields carries the optional resource requirements accepted
+// by the workspace create and start bodies. Every field defaults to
+// zero (no requirement), so bodies without them behave exactly as
+// before; negative values are rejected with 400.
+type placementFields struct {
+	CPU      int               `json:"cpu"`
+	MemoryMB int64             `json:"memory_mb"`
+	DiskGB   int64             `json:"disk_gb"`
+	GPUs     int               `json:"gpus"`
+	Selector map[string]string `json:"selector"`
+}
+
+// request converts the fields to a controller placement request.
+func (f placementFields) request() controller.PlacementRequest {
+	return controller.PlacementRequest{
+		Resources: types.Resource{CPU: f.CPU, MemoryMB: f.MemoryMB, DiskGB: f.DiskGB, GPUs: f.GPUs},
+		Selector:  f.Selector,
+	}
+}
+
 // createRequest is the POST /v1/workspaces body.
 type createRequest struct {
 	UserID string `json:"user_id"`
 	Name   string `json:"name"`
+	placementFields
 }
 
 func (s *Server) createWorkspace(w http.ResponseWriter, r *http.Request) {
@@ -136,7 +160,18 @@ func (s *Server) createWorkspace(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "user_id and name are required")
 		return
 	}
-	ws, err := s.ctrl.Create(r.Context(), req.UserID, req.Name)
+	placement := req.request()
+	if placement.Resources.Negative() {
+		writeError(w, http.StatusBadRequest, "resource requirements must not be negative")
+		return
+	}
+	var ws types.Workspace
+	var err error
+	if placement.Empty() {
+		ws, err = s.ctrl.Create(r.Context(), req.UserID, req.Name)
+	} else {
+		ws, err = s.ctrl.CreateWithResources(r.Context(), req.UserID, req.Name, placement)
+	}
 	if err != nil {
 		writeControllerError(w, err)
 		return
@@ -171,6 +206,43 @@ func (s *Server) deleteWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// startWorkspace starts a workspace, optionally recording the resource
+// requirements carried by the body first. An empty body starts with
+// the requirements recorded at creation.
+func (s *Server) startWorkspace(w http.ResponseWriter, r *http.Request) {
+	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBodyBytes))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	id := r.PathValue("id")
+	if len(bytes.TrimSpace(raw)) == 0 {
+		ws, err := s.ctrl.Start(r.Context(), id)
+		if err != nil {
+			writeControllerError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, ws)
+		return
+	}
+	var req placementFields
+	if err := json.Unmarshal(raw, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	placement := req.request()
+	if placement.Resources.Negative() {
+		writeError(w, http.StatusBadRequest, "resource requirements must not be negative")
+		return
+	}
+	ws, err := s.ctrl.StartWithResources(r.Context(), id, placement)
+	if err != nil {
+		writeControllerError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, ws)
 }
 
 // transition builds a POST action handler over a controller method.
