@@ -58,6 +58,10 @@ var defaultInitCommand = []string{"sleep", "infinity"}
 // the configured FilesystemProvider and emit file.changed on every
 // mutation. Without a provider they return ErrFilesystemsUnavailable.
 //
+// Processes (see processes.go) list the container processes and stream
+// their logs. Exec emits process.started, process.stdout and
+// process.exited for every command.
+//
 // A nil bus disables event publishing. Methods are safe for concurrent
 // use.
 type Controller struct {
@@ -352,18 +356,29 @@ func (c *Controller) Delete(ctx context.Context, id string) error {
 }
 
 // Exec runs a command in the workspace container. The workspace must be
-// RUNNING.
+// RUNNING. It emits process.started before the command runs,
+// process.stdout per output chunk, and process.exited once it finishes;
+// all three share the exec process id (opts.ExecID, generated when
+// empty), which is also the id under Processes/ProcessLogs.
 func (c *Controller) Exec(ctx context.Context, id string, opts container.ExecOptions) error {
-	ws, err := c.store.Get(ctx, id)
+	ws, ctrID, opts, err := c.prepareExec(ctx, id, opts)
 	if err != nil {
 		return err
 	}
-	if ws.Status != types.WorkspaceRunning {
-		return fmt.Errorf("%w: cannot exec in workspace in %s", ErrIllegalTransition, ws.Status)
+	c.emitProcess(ws.ID, protocol.EventProcessStarted,
+		processStartedPayload{ProcessID: opts.ExecID, Command: opts.Cmd})
+	if opts.Stdout != nil {
+		opts.Stdout = eventWriter{bus: c.bus, workspaceID: ws.ID, processID: opts.ExecID, dst: opts.Stdout}
 	}
-	ctrID, ok := c.containerFor(id)
-	if !ok {
-		return fmt.Errorf("controller: exec %s: no container bound", id)
+	if opts.Stderr != nil {
+		opts.Stderr = eventWriter{bus: c.bus, workspaceID: ws.ID, processID: opts.ExecID, dst: opts.Stderr}
 	}
-	return c.backend.Exec(ctx, ctrID, opts)
+	runErr := c.backend.Exec(ctx, ctrID, opts)
+	exited := processExitedPayload{ProcessID: opts.ExecID}
+	if runErr != nil {
+		exited.ExitCode = -1
+		exited.Error = runErr.Error()
+	}
+	c.emitProcess(ws.ID, protocol.EventProcessExited, exited)
+	return runErr
 }
