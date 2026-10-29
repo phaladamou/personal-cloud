@@ -4,10 +4,15 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/phaladamou/personal-cloud/packages/protocol"
 	"github.com/phaladamou/personal-cloud/runtime/container"
+	"github.com/phaladamou/personal-cloud/services/api"
+	controller "github.com/phaladamou/personal-cloud/services/workspace-controller"
 )
 
 // createAndStart creates a workspace through the CLI and starts it,
@@ -101,5 +106,52 @@ func TestExecNotRunning(t *testing.T) {
 		t.Fatal("exec on CREATED: exit 0, want nonzero")
 	} else if stderr == "" {
 		t.Fatal("exec on CREATED: empty stderr")
+	}
+}
+
+// TestExecLiveLocalBackend runs exec against the real local backend
+// (OS processes, ctx-cancellable). Unlike the fake backend, it kills
+// the command when the server cancels the exec context, so it guards
+// the stdin-EOF path: piping stdin into cat must echo and exit 0,
+// and a failing command must surface its error.
+func TestExecLiveLocalBackend(t *testing.T) {
+	store, err := controller.NewFileStore(filepath.Join(t.TempDir(), "ws.json"))
+	if err != nil {
+		t.Fatalf("NewFileStore: %v", err)
+	}
+	ctrl := controller.NewController(store, container.DefaultBackend(), protocol.NewEventBus())
+	srv := httptest.NewServer(api.NewServer(ctrl))
+	t.Cleanup(srv.Close)
+	vars := map[string]string{"PC_CONFIG_DIR": t.TempDir(), "PC_API": srv.URL}
+	getenv := func(k string) string { return vars[k] }
+
+	if code, _, stderr := runCLI([]string{"workspace", "create", "live"}, "", getenv); code != 0 {
+		t.Fatalf("create: exit %d, stderr %q", code, stderr)
+	}
+	_, out, _ := runCLI([]string{"workspace", "list"}, "", getenv)
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	id := strings.Split(lines[len(lines)-1], "\t")[0]
+	t.Cleanup(func() {
+		_, _, _ = runCLI([]string{"workspace", "stop", id}, "", getenv)
+		_, _, _ = runCLI([]string{"workspace", "delete", id}, "", getenv)
+	})
+	if code, _, stderr := runCLI([]string{"workspace", "start", id}, "", getenv); code != 0 {
+		t.Fatalf("start: exit %d, stderr %q", code, stderr)
+	}
+
+	code, stdout, stderr := runCLI([]string{"exec", id, "--", "cat"}, "live-ping", getenv)
+	if code != 0 {
+		t.Fatalf("exec cat: exit %d, stderr %q", code, stderr)
+	}
+	if stdout != "live-ping" {
+		t.Fatalf("exec cat stdout: got %q, want %q", stdout, "live-ping")
+	}
+
+	code, _, stderr = runCLI([]string{"exec", id, "--", "sh", "-c", "echo out; exit 3"}, "", getenv)
+	if code == 0 {
+		t.Fatal("exec exit-3: exit 0, want nonzero")
+	}
+	if !strings.Contains(stderr, "error: ") {
+		t.Fatalf("exec exit-3 stderr: got %q, want error: ...", stderr)
 	}
 }

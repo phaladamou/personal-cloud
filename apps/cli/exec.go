@@ -58,14 +58,21 @@ func cmdExec(c *Client, args, cmd []string, stdout, stderr io.Writer, stdin io.R
 	}()
 
 	failed := false
+	closing := false
 	for {
 		op, msg, err := conn.ReadMessage()
 		if err != nil {
 			if errors.Is(err, wsclient.ErrClosed) {
-				if failed {
-					return fmt.Errorf("exec: command failed")
-				}
-				return nil
+				// The server answers our stdin-EOF close
+				// immediately, possibly before command
+				// output; keep draining until it closes
+				// the TCP connection (after the command
+				// exits).
+				closing = true
+				continue
+			}
+			if closing && (errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)) {
+				break
 			}
 			return fmt.Errorf("exec: read: %w", err)
 		}
@@ -85,6 +92,10 @@ func cmdExec(c *Client, args, cmd []string, stdout, stderr io.Writer, stdin io.R
 			}
 		}
 	}
+	if failed {
+		return fmt.Errorf("exec: command failed")
+	}
+	return nil
 }
 
 // execURL builds the WebSocket URL for the exec endpoint, mapping the

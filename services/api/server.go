@@ -206,14 +206,18 @@ func (s *Server) execWorkspace(w http.ResponseWriter, r *http.Request) {
 		})
 	}()
 
-	// Client messages feed command stdin; any read failure (including
-	// the client going away) cancels the command.
+	// Client messages feed command stdin. A clean close frame means
+	// stdin EOF: the pipe is closed and the command drains and exits
+	// on its own. Any other read failure (the client going away)
+	// cancels the command.
 	go func() {
 		defer stdinW.Close()
-		defer cancel()
 		for {
 			op, msg, err := conn.ReadMessage()
 			if err != nil {
+				if !errors.Is(err, ws.ErrClosed) {
+					cancel()
+				}
 				return
 			}
 			if op != ws.OpText && op != ws.OpBinary {
